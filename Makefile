@@ -14,18 +14,20 @@ DEBUG_FLAGS := -std=gnu17 -O1 -g -fno-omit-frame-pointer -fopenmp -pthread \
 
 LIB_SRC := $(wildcard csrc/*.c)
 LIB     := build/libseedling.so
-C_TESTS := build/test_sum build/test_ring
+C_TESTS := build/test_sum build/test_ring build/test_philox build/test_xxhash build/test_apply
 
 .PHONY: all debug test-c clean
 
 all: $(LIB)
 
-$(LIB): $(LIB_SRC) csrc/seedling.h | build
+HEADERS := $(wildcard csrc/*.h)
+
+$(LIB): $(LIB_SRC) $(HEADERS) | build
 	$(CC) $(CFLAGS) -shared -o $@ $(LIB_SRC)
 
 debug: $(C_TESTS)
 
-build/test_%: csrc/tests/test_%.c $(LIB_SRC) csrc/seedling.h | build
+build/test_%: csrc/tests/test_%.c $(LIB_SRC) $(HEADERS) | build
 	$(CC) $(DEBUG_FLAGS) -Icsrc -o $@ $< $(LIB_SRC)
 
 test-c: debug

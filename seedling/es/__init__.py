@@ -4,7 +4,7 @@ Explained in docs/M3-explained.md.
 """
 
 from seedling.es.batched_mlp import BatchedMLP
-from seedling.es.es import ES, centered_ranks, estimate_gradient, raw_fitness
+from seedling.es.es import ES, centered_ranks, estimate_gradient, raw_fitness, step_seeds
 from seedling.es.evaluate import evaluate_batched, evaluate_inplace, perturb_
 from seedling.es.noise import noise
 from seedling.es.optim import SGD, Adam, Optimizer
@@ -25,4 +25,5 @@ __all__ = [
     "noise",
     "perturb_",
     "raw_fitness",
+    "step_seeds",
 ]

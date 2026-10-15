@@ -18,6 +18,13 @@ from seedling.es.noise import noise
 from seedling.es.optim import Optimizer
 
 FitnessShaper = Callable[[np.ndarray], np.ndarray]
+NoiseFn = Callable[[int, int], torch.Tensor]
+
+
+def step_seeds(seed: int, step: int, pop: int) -> list[int]:
+    """The seeds of one step: a pure function of (run seed, step), so anyone can rebuild them."""
+    rng = np.random.default_rng([seed, step])
+    return [int(s) for s in rng.integers(0, 2**63 - 1, size=pop, dtype=np.int64)]
 
 
 def centered_ranks(fitness: np.ndarray) -> np.ndarray:
@@ -41,6 +48,7 @@ def estimate_gradient(
     sigma: float,
     dim: int,
     shaper: FitnessShaper = centered_ranks,
+    noise_fn: NoiseFn = noise,
 ) -> torch.Tensor:
     """Antithetic ES estimate: g = 1/(2 N sigma) * sum_i (F+_i - F-_i) * eps_i."""
     n = len(seeds)
@@ -48,7 +56,7 @@ def estimate_gradient(
     weights = shaped[:n] - shaped[n:]
     grad = torch.zeros(dim)
     for seed, weight in zip(seeds, weights, strict=True):
-        grad.add_(noise(seed, dim), alpha=float(weight))
+        grad.add_(noise_fn(seed, dim), alpha=float(weight))
     return grad / (2 * n * sigma)
 
 
@@ -72,8 +80,7 @@ class ES:
 
     def ask(self) -> list[int]:
         """The seeds for this step. Each seed is evaluated at theta + sigma*eps and theta - sigma*eps."""
-        rng = np.random.default_rng([self.seed, self.step])
-        return [int(s) for s in rng.integers(0, 2**63 - 1, size=self.pop, dtype=np.int64)]
+        return step_seeds(self.seed, self.step, self.pop)
 
     def tell(self, seeds: Sequence[int], f_plus: np.ndarray, f_minus: np.ndarray) -> torch.Tensor:
         """Update theta from the scores of this step's seeds; returns the gradient estimate."""

@@ -189,3 +189,30 @@ def train_backprop(
                 }
             )
     return theta.detach(), history
+
+
+class MnistTask:
+    """MNIST as a Task: fitness = minus the cross-entropy on a minibatch chosen by the step."""
+
+    name = "mnist"
+    dim = MODEL.size
+
+    def __init__(self, data: MNIST | None = None, batch: int = 256):
+        self._data = data
+        self.batch = batch
+
+    @property
+    def data(self) -> MNIST:
+        if self._data is None:
+            self._data = load()
+        return self._data
+
+    def init(self, seed: int) -> torch.Tensor:
+        return MODEL.init(torch.Generator().manual_seed(seed))
+
+    def fitness(self, thetas: torch.Tensor, step: int) -> torch.Tensor:
+        x, y = self.data.batch(self.batch, torch.Generator().manual_seed(step))
+        return fitness(thetas, x, y)
+
+    def evaluate(self, theta: torch.Tensor, step: int) -> dict[str, float]:
+        return {"test_accuracy": accuracy(theta, self.data.test_x, self.data.test_y)}

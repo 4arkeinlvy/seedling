@@ -7,6 +7,7 @@
 #define SEEDLING_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 /* "seedling x.y.z": lets Python check that the library loaded. */
 const char *sl_version(void);
@@ -22,5 +23,25 @@ int sl_sum_f32(float *restrict dst, const float *restrict src, size_t n);
  * Afterwards every rank holds exactly the same bits. */
 int sl_ring_allreduce_f32(int left_fd, int right_fd, float *buf, size_t n,
                           int rank, int world);
+
+/* ---- M4: bit-exact core ---------------------------------------------------- */
+
+/* Philox4x32-10: out = philox(counter, key), 128 random bits. */
+int sl_philox4x32(const uint32_t counter[4], const uint32_t key[2], uint32_t out[4]);
+
+/* out[j] = +1 or -1 for elements offset .. offset+n-1 of the sign stream (seed, stream).
+ * Element i uses bit i % 128 of philox(counter = (i / 128, stream, 0), key = seed). */
+int sl_rademacher_i8(uint64_t seed, uint32_t stream, uint64_t offset, int8_t *out, size_t n);
+
+/* state[i] += sum_j coefs[j] * sign(seeds[j], stream, i), saturated to int32.
+ * Exact: the same bits for any thread count. */
+int sl_apply_rademacher_i32(int32_t *state, size_t n, const uint64_t *seeds, const int32_t *coefs,
+                            size_t k, uint32_t stream);
+
+/* xxHash64 of len bytes (spec-compatible with the reference implementation). */
+int sl_xxh64_into(const void *data, size_t len, uint64_t seed, uint64_t *out);
+
+/* Number of OpenMP threads for the functions above (tests use it to prove invariance). */
+int sl_set_num_threads(int threads);
 
 #endif /* SEEDLING_H */

@@ -11,7 +11,7 @@ bytes. Every worker replays that list with exact integer math in C, so all copie
 model stay **bit-for-bit identical**, and a whole training run becomes a small log you
 can replay.
 
-> Status: learning project, built from first principles. M0–M3 are done; M4 (bit-exact C core) is next.
+> Status: learning project, built from first principles. M0–M4 are done; M5 (distributed runtime) is next.
 
 ## Roadmap
 
@@ -21,7 +21,7 @@ can replay.
 | [x] | **M1** comm layer | framing, rendezvous store, collectives; ring all-reduce in Python and C |
 | [x] | **M2** DDP | data-parallel training from scratch: the mainstream baseline |
 | [x] | **M3** ES engine | evolution strategies on CartPole, MNIST, tiny GPT |
-| [ ] | **M4** bit-exact core | Philox RNG, integer state updates, hashing in C |
+| [x] | **M4** bit-exact core | Philox RNG, integer state updates, hashing in C |
 | [ ] | **M5** runtime | coordinator + workers: replicated log, failures, join/leave, NAT |
 | [ ] | **M6** LLM demo | fine-tune Qwen2.5-0.5B on Countdown with laptop + Kaggle |
 | [ ] | **M7** package | pip install, CLI, CI, blog post |
@@ -61,11 +61,12 @@ uv run python -m bench.plot_es                                            # M3: 
 ## Layout
 
 ```
-csrc/            C core (ctypes-loaded): ring all-reduce now; RNG + exact updates in M4
+csrc/            C core (ctypes): ring all-reduce, Philox RNG, exact integer updates, xxHash64
 seedling/
   _c.py          ctypes bindings
   data.py        char tokenizer + batches
   es/            evolution strategies: noise, ES (ask/tell), optimizers, evaluators, BatchedMLP
+  exact/         bit-exact core: fixed-point state, step records, integer ES, replay
   tasks/         workloads: tiny_gpt, train_ddp, cartpole, mnist, es_gpt, es_demo
   foundation/    launch.py, wire.py, store.py, collectives.py, ddp.py
 tests/           the spec

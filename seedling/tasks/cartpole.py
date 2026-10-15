@@ -49,7 +49,9 @@ def has_failed(state: torch.Tensor) -> torch.Tensor:
     return (state[..., 0].abs() > X_LIMIT) | (state[..., 2].abs() > ANGLE_LIMIT)
 
 
-def episode_returns(thetas: torch.Tensor, episodes: int = 5, seed: int = 0) -> torch.Tensor:
+def episode_returns(
+    thetas: torch.Tensor, episodes: int = 5, seed: int = 0, policy: BatchedMLP = POLICY
+) -> torch.Tensor:
     """Average return of each of the P policies in thetas (P, d), on the same E start states."""
     generator = torch.Generator().manual_seed(seed)
     start = (torch.rand(episodes, 4, generator=generator) - 0.5) * 0.1
@@ -57,7 +59,7 @@ def episode_returns(thetas: torch.Tensor, episodes: int = 5, seed: int = 0) -> t
     alive = torch.ones(state.shape[:2], dtype=torch.bool)
     returns = torch.zeros(state.shape[:2])
     for _ in range(MAX_STEPS):
-        logits = POLICY(thetas, state)
+        logits = policy(thetas, state)
         new_state = physics_step(state, logits[..., 1] > logits[..., 0])
         returns += alive
         state = torch.where(alive.unsqueeze(-1), new_state, state)
@@ -65,6 +67,27 @@ def episode_returns(thetas: torch.Tensor, episodes: int = 5, seed: int = 0) -> t
         if not alive.any():
             break
     return returns.mean(dim=1)
+
+
+class CartPoleTask:
+    """CartPole as a Task: fitness = average return over `episodes` starts chosen by the step."""
+
+    name = "cartpole"
+
+    def __init__(self, episodes: int = 5, hidden: int = 16):
+        self.episodes = episodes
+        self.policy = BatchedMLP([4, hidden, 2])
+        self.dim = self.policy.size
+
+    def init(self, seed: int) -> torch.Tensor:
+        return self.policy.init(torch.Generator().manual_seed(seed))
+
+    def fitness(self, thetas: torch.Tensor, step: int) -> torch.Tensor:
+        return episode_returns(thetas, self.episodes, seed=step, policy=self.policy)
+
+    def evaluate(self, theta: torch.Tensor, step: int) -> dict[str, float]:
+        returns = episode_returns(theta[None], episodes=20, seed=10_000 + step, policy=self.policy)
+        return {"policy_return": float(returns[0])}
 
 
 def train_es(

@@ -18,6 +18,8 @@ import torch.nn as nn
 from seedling.es.noise import noise
 from seedling.es.vector import assign
 
+NoiseFn = Callable[[int, int], torch.Tensor]
+
 
 def _numpy(values) -> np.ndarray:
     if isinstance(values, torch.Tensor):
@@ -30,9 +32,10 @@ def evaluate_batched(
     theta: torch.Tensor,
     seeds: Sequence[int],
     sigma: float,
+    noise_fn: NoiseFn = noise,
 ) -> tuple[np.ndarray, np.ndarray]:
     """fitness maps a (2N, d) batch of parameter vectors to 2N scores (higher is better)."""
-    eps = torch.stack([noise(seed, theta.numel()) for seed in seeds])
+    eps = torch.stack([noise_fn(seed, theta.numel()) for seed in seeds])
     scores = _numpy(fitness(torch.cat([theta + sigma * eps, theta - sigma * eps])))
     n = len(seeds)
     return scores[:n], scores[n:]
@@ -55,6 +58,7 @@ def evaluate_inplace(
     theta: torch.Tensor,
     seeds: Sequence[int],
     sigma: float,
+    noise_fn: NoiseFn = noise,
 ) -> tuple[np.ndarray, np.ndarray]:
     """fitness scores the model as it currently is. The model ends holding exactly theta."""
     params = list(model.parameters())
@@ -62,7 +66,7 @@ def evaluate_inplace(
     f_plus, f_minus = [], []
     for seed in seeds:
         assign(model, theta)
-        eps = noise(seed, theta.numel()).to(device)
+        eps = noise_fn(seed, theta.numel()).to(device)
         perturb_(params, eps, sigma)
         f_plus.append(fitness(model))
         perturb_(params, eps, -2 * sigma)
