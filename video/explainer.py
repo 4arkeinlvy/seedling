@@ -1,4 +1,4 @@
-"""A one-minute explainer of seedling, made with Manim (text and shapes only, no LaTeX).
+"""A 40-second explainer of seedling, made with Manim (text and shapes only, no LaTeX).
 
     pip install manim            # needs cairo + pango; on NixOS: nix-shell -p cairo pango pkg-config
     manim -qh video/explainer.py Explainer       # 1080p, writes video/media/videos/...

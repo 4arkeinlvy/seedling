@@ -13,6 +13,8 @@ Built from first principles as a learning project: sockets, collectives, DDP, ES
 counter-based RNG, a write-ahead journal and an LLM fine-tuning demo, all written and tested
 here.
 
+**Watch:** [a 40-second explainer](assets/seedling-explainer.mp4) (made with Manim, `video/explainer.py`).
+
 ## Results (one laptop: i5-12450H, RTX 3050 4 GB)
 
 | What | Result |
@@ -125,7 +127,8 @@ seedling/
   cli.py         seedling train | coordinator | worker | replay
 tests/           the spec: 191 Python tests (heavy = multi-process, llm = GPU) + 5 C test programs
 bench/           all-reduce bandwidth, DDP step time, ES curves
-video/           a one-minute Manim explainer (video/explainer.py)
+assets/          the rendered explainer video
+video/           its Manim source (video/explainer.py)
 ```
 
 ## Roadmap
