@@ -9,3 +9,4 @@ data/mnist/
 *.part
 .env
 docs/
+runs/

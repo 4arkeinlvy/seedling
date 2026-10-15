@@ -11,7 +11,7 @@ bytes. Every worker replays that list with exact integer math in C, so all copie
 model stay **bit-for-bit identical**, and a whole training run becomes a small log you
 can replay.
 
-> Status: learning project, built from first principles. M0–M4 are done; M5 (distributed runtime) is next.
+> Status: learning project, built from first principles. M0–M5 are done; M6 (Qwen2.5-0.5B demo) is next.
 
 ## Roadmap
 
@@ -22,7 +22,7 @@ can replay.
 | [x] | **M2** DDP | data-parallel training from scratch: the mainstream baseline |
 | [x] | **M3** ES engine | evolution strategies on CartPole, MNIST, tiny GPT |
 | [x] | **M4** bit-exact core | Philox RNG, integer state updates, hashing in C |
-| [ ] | **M5** runtime | coordinator + workers: replicated log, failures, join/leave, NAT |
+| [x] | **M5** runtime | coordinator + workers: replicated log, failures, join/leave, NAT |
 | [ ] | **M6** LLM demo | fine-tune Qwen2.5-0.5B on Countdown with laptop + Kaggle |
 | [ ] | **M7** package | pip install, CLI, CI, blog post |
 
@@ -56,6 +56,9 @@ uv run python -m seedling.foundation.launch -n 2 seedling.tasks.train_ddp:main  
 uv run python -m bench.bench_ddp                                          # M2: step-time breakdown
 uv run python -m seedling.tasks.es_demo --task cartpole                   # M3: also mnist, gpt
 uv run python -m bench.plot_es                                            # M3: plots
+uv run python -m seedling coordinator --task cartpole --run-dir runs/cp   # M5: start a run
+uv run python -m seedling worker --connect tcp://127.0.0.1:7070           # M5: join it (any machine)
+uv run python -m seedling replay --run-dir runs/cp                        # M5: rebuild from the log
 ```
 
 ## Layout
@@ -67,6 +70,8 @@ seedling/
   data.py        char tokenizer + batches
   es/            evolution strategies: noise, ES (ask/tell), optimizers, evaluators, BatchedMLP
   exact/         bit-exact core: fixed-point state, step records, integer ES, replay
+  runtime/       coordinator, workers, journal, TCP/HTTP transports, task registry
+  cli.py         python -m seedling coordinator | worker | replay
   tasks/         workloads: tiny_gpt, train_ddp, cartpole, mnist, es_gpt, es_demo
   foundation/    launch.py, wire.py, store.py, collectives.py, ddp.py
 tests/           the spec
