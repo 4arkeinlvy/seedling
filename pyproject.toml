@@ -1,0 +1,44 @@
+[project]
+name = "seedling"
+version = "0.0.1"
+description = "Train models on pooled, unreliable hardware by sharing only seeds and scores."
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=2.1",
+    "torch>=2.14",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "matplotlib>=3.9",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["seedling"]
+
+[tool.uv]
+# NixOS: uv's own Python runs through nix-ld and can load pip wheels such as torch.
+# The nixpkgs Python cannot, so never pick it.
+python-preference = "only-managed"
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu130" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra -m 'not heavy'"
+markers = [
+    "heavy: child processes import torch (~1 GB extra RAM). Run with: uv run pytest -m heavy",
+]
