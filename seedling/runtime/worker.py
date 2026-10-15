@@ -14,15 +14,14 @@ from dataclasses import dataclass
 import numpy as np
 
 from seedling.es.es import step_seeds
-from seedling.es.evaluate import evaluate_batched
-from seedling.exact.integer_es import rademacher_noise
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.runtime import protocol as p
 from seedling.runtime.config import RunConfig
-from seedling.runtime.coordinator import initial_state
-from seedling.runtime.tasks import create_task
+from seedling.runtime.coordinator import build_workload
+from seedling.runtime.tasks import create_workload
 from seedling.runtime.transport import Transport
+from seedling.runtime.workload import Workload
 
 
 class ReplicaMismatch(RuntimeError):
@@ -48,13 +47,13 @@ class Worker:
         self,
         transport: Transport,
         worker_id: str,
-        task_factory: Callable = create_task,
+        workload_factory: Callable[..., Workload] = create_workload,
         max_retry_seconds: float = 60.0,
         sleep: Callable[[float], None] = time.sleep,
     ):
         self.transport = transport
         self.worker_id = worker_id
-        self.task_factory = task_factory
+        self.workload_factory = workload_factory
         self.max_retry_seconds = max_retry_seconds
         self.sleep = sleep
         self.stats = WorkerStats()
@@ -84,8 +83,8 @@ class Worker:
     def _join(self) -> None:
         welcome = expect(self._call(p.Hello(self.worker_id)), p.Welcome)
         self.config = RunConfig.from_json(welcome.config)
-        self.task = self.task_factory(self.config.task, **self.config.task_args)
-        self.initial = initial_state(self.config, self.task_factory)
+        self.workload = build_workload(self.config, self.workload_factory)
+        self.initial = self.workload.initial_state(self.config.seed, self.config.frac_bits)
         if self.initial.digest() != welcome.initial_digest:
             raise ReplicaMismatch("initial state differs from the coordinator's")
         self._reset()
@@ -107,7 +106,7 @@ class Worker:
             record = StepRecord.from_json(data)
             if record.step != self.step:
                 raise ReplicaMismatch(f"expected record {self.step}, got {record.step}")
-            self.state.apply(record)
+            self.workload.apply(self.state, record)
             self.step += 1
 
     # ---------------------------------------------------------------- work
@@ -115,13 +114,7 @@ class Worker:
     def _score(self, work: p.Work) -> p.Submit:
         seeds = step_seeds(self.config.seed, work.step, self.config.pop)
         chosen = [seeds[i] for i in work.pairs]
-        f_plus, f_minus = evaluate_batched(
-            lambda thetas: self.task.fitness(thetas, work.step),
-            self.state.to_float(),
-            chosen,
-            self.config.sigma,
-            noise_fn=rademacher_noise,
-        )
+        f_plus, f_minus = self.workload.score(self.state, work.step, chosen, self.config.sigma)
         self.stats.pairs_scored += len(work.pairs)
         return p.Submit(
             self.worker_id, work.step, list(work.pairs), f_plus.tolist(), f_minus.tolist(), self.state.digest()

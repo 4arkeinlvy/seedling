@@ -1,6 +1,6 @@
 """M3: MNIST digits with a small MLP, trained by ES and by backprop (same model code).
 
-The four idx files (~11 MB) are downloaded once into data/mnist/ and checked by MD5.
+The four idx files (~11 MB) are downloaded once into ~/.cache/seedling/mnist and checked by MD5.
 
     run:  uv run python -m seedling.tasks.es_demo --task mnist
 """
@@ -20,7 +20,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from seedling.data import DATA_DIR
+from seedling.data import data_dir
 from seedling.es import ES, Adam, BatchedMLP, evaluate_batched
 
 MIRRORS = (
@@ -49,7 +49,8 @@ def _tls_context() -> ssl.SSLContext:
     return ssl.create_default_context(cafile=bundle)
 
 
-def download(root: Path = DATA_DIR / "mnist") -> Path:
+def download(root: Path | None = None) -> Path:
+    root = root or data_dir() / "mnist"
     root.mkdir(parents=True, exist_ok=True)
     context = _tls_context()
     for name, md5 in FILES.items():
@@ -95,7 +96,7 @@ class MNIST:
         return self.train_x[idx].float() / 255, self.train_y[idx]
 
 
-def load(root: Path = DATA_DIR / "mnist") -> MNIST:
+def load(root: Path | None = None) -> MNIST:
     root = download(root)
 
     def images(name: str) -> torch.Tensor:

@@ -38,6 +38,11 @@ int sl_rademacher_i8(uint64_t seed, uint32_t stream, uint64_t offset, int8_t *ou
 int sl_apply_rademacher_i32(int32_t *state, size_t n, const uint64_t *seeds, const int32_t *coefs,
                             size_t k, uint32_t stream);
 
+/* delta (rows x cols, row-major) += sum_j coefs[j] * b_j a_j^T with
+ * a_j[c] = sign(seeds[j], stream_a, c), b_j[r] = sign(seeds[j], stream_b, r). Exact, saturated. */
+int sl_apply_lowrank_i32(int32_t *delta, size_t rows, size_t cols, const uint64_t *seeds,
+                         const int32_t *coefs, size_t k, uint32_t stream_a, uint32_t stream_b);
+
 /* xxHash64 of len bytes (spec-compatible with the reference implementation). */
 int sl_xxh64_into(const void *data, size_t len, uint64_t seed, uint64_t *out);
 

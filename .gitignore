@@ -5,8 +5,11 @@ __pycache__/
 .pytest_cache/
 bench/results/
 runs/
-data/mnist/
 *.part
 .env
 docs/
 runs/
+seedling/_libseedling*.so
+dist/
+*.egg-info/
+video/media/

@@ -2,15 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import torch
 
-DATA_DIR = Path(__file__).resolve().parent.parent / "data"
+ASSETS = Path(__file__).resolve().parent / "assets"
+
+
+def data_dir() -> Path:
+    """Where downloaded datasets live: $SEEDLING_DATA, else ~/.cache/seedling."""
+    return Path(os.environ.get("SEEDLING_DATA", Path.home() / ".cache" / "seedling"))
 
 
 def load_text(name: str = "the-verdict.txt") -> str:
-    return (DATA_DIR / name).read_text(encoding="utf-8")
+    return (ASSETS / name).read_text(encoding="utf-8")
 
 
 class CharTokenizer:

@@ -97,3 +97,15 @@ def xxh64(data: bytes, seed: int = 0) -> int:
     h = (h * P3) & MASK64
     h ^= h >> 32
     return h
+
+
+def apply_lowrank(
+    delta: np.ndarray, seeds: Sequence[int], coefs: Sequence[int], stream_a: int, stream_b: int
+) -> np.ndarray:
+    rows, cols = delta.shape
+    acc = delta.astype(np.int64)
+    for seed, coef in zip(seeds, coefs, strict=True):
+        a = rademacher(seed, cols, stream_a).astype(np.int64)
+        b = rademacher(seed, rows, stream_b).astype(np.int64)
+        acc += int(coef) * np.outer(b, a)
+    return np.clip(acc, np.iinfo(np.int32).min, np.iinfo(np.int32).max).astype(np.int32)

@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def cuda():
     """The CUDA device. Skips on machines without an NVIDIA GPU, but FAILS when the GPU is
     there and PyTorch can't see it (the usual NixOS problem), so you don't miss it."""

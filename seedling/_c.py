@@ -1,4 +1,4 @@
-"""ctypes bindings for the C core in csrc/. Build it first with `make`.
+"""ctypes bindings for the C core in csrc/ (built by `make`, or into the wheel by setup.py).
 
 The only module that talks to C: everything else calls these typed wrappers.
 ctypes releases the GIL while C code runs, so other Python threads keep going.
@@ -7,13 +7,30 @@ ctypes releases the GIL while C code runs, so other Python threads keep going.
 from __future__ import annotations
 
 import ctypes
+import importlib.machinery
 import os
 from functools import cache
 from pathlib import Path
 
 import numpy as np
 
-LIB_PATH = Path(__file__).resolve().parent.parent / "build" / "libseedling.so"
+PACKAGE_DIR = Path(__file__).resolve().parent
+DEV_LIB = PACKAGE_DIR.parent / "build" / "libseedling.so"
+
+
+def library_path() -> Path:
+    """SEEDLING_LIB if set, else the `make` build (dev, -march=native), else the copy built
+    into the installed package."""
+    override = os.environ.get("SEEDLING_LIB")
+    if override:
+        return Path(override)
+    if DEV_LIB.exists():
+        return DEV_LIB
+    for suffix in importlib.machinery.EXTENSION_SUFFIXES:
+        packaged = PACKAGE_DIR / f"_libseedling{suffix}"
+        if packaged.exists():
+            return packaged
+    raise FileNotFoundError("seedling's C library is missing: run `make` or reinstall the package")
 
 _c_int, _c_size, _c_ptr = ctypes.c_int, ctypes.c_size_t, ctypes.c_void_p
 _c_u32, _c_u64 = ctypes.c_uint32, ctypes.c_uint64
@@ -24,6 +41,7 @@ _SIGNATURES = {
     "sl_philox4x32": ([_c_ptr, _c_ptr, _c_ptr], _c_int),
     "sl_rademacher_i8": ([_c_u64, _c_u32, _c_u64, _c_ptr, _c_size], _c_int),
     "sl_apply_rademacher_i32": ([_c_ptr, _c_size, _c_ptr, _c_ptr, _c_size, _c_u32], _c_int),
+    "sl_apply_lowrank_i32": ([_c_ptr, _c_size, _c_size, _c_ptr, _c_ptr, _c_size, _c_u32, _c_u32], _c_int),
     "sl_xxh64_into": ([_c_ptr, _c_size, _c_u64, _c_ptr], _c_int),
     "sl_set_num_threads": ([_c_int], _c_int),
 }
@@ -31,9 +49,7 @@ _SIGNATURES = {
 
 @cache
 def lib() -> ctypes.CDLL:
-    if not LIB_PATH.exists():
-        raise FileNotFoundError(f"{LIB_PATH} not found: run `make` in the repo root first")
-    so = ctypes.CDLL(str(LIB_PATH))
+    so = ctypes.CDLL(str(library_path()))
     for name, (argtypes, restype) in _SIGNATURES.items():
         fn = getattr(so, name)
         fn.argtypes = argtypes
@@ -108,6 +124,28 @@ def apply_rademacher_i32(state: np.ndarray, seeds: np.ndarray, coefs: np.ndarray
             stream,
         ),
         "sl_apply_rademacher_i32",
+    )
+
+
+def apply_lowrank_i32(
+    delta: np.ndarray, seeds: np.ndarray, coefs: np.ndarray, stream_a: int, stream_b: int
+) -> None:
+    """delta (rows, cols) += sum_j coefs[j] * outer(b_j, a_j), in place, exact."""
+    if delta.ndim != 2 or seeds.size != coefs.size:
+        raise ValueError("delta must be 2-D and there must be one coefficient per seed")
+    rows, cols = delta.shape
+    _check(
+        lib().sl_apply_lowrank_i32(
+            _ptr(delta, np.int32, writable=True),
+            rows,
+            cols,
+            _ptr(seeds, np.uint64),
+            _ptr(coefs, np.int32),
+            seeds.size,
+            stream_a,
+            stream_b,
+        ),
+        "sl_apply_lowrank_i32",
     )
 
 

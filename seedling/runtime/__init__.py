@@ -5,9 +5,9 @@ Explained in docs/M5-explained.md.
 """
 
 from seedling.runtime.config import RunConfig
-from seedling.runtime.coordinator import Coordinator, initial_state
+from seedling.runtime.coordinator import Coordinator, build_workload, initial_state
 from seedling.runtime.journal import Journal
-from seedling.runtime.tasks import create_task, register
+from seedling.runtime.tasks import create_workload, register
 from seedling.runtime.transport import (
     HttpServer,
     HttpTransport,
@@ -20,6 +20,7 @@ from seedling.runtime.transport import (
     serialized,
 )
 from seedling.runtime.worker import ReplicaMismatch, Worker
+from seedling.runtime.workload import VectorWorkload, Workload, replay_workload
 
 __all__ = [
     "Coordinator",
@@ -33,10 +34,14 @@ __all__ = [
     "TcpTransport",
     "Transport",
     "Worker",
+    "VectorWorkload",
+    "Workload",
+    "build_workload",
     "connect",
-    "create_task",
+    "create_workload",
     "initial_state",
     "make_server",
     "register",
+    "replay_workload",
     "serialized",
 ]

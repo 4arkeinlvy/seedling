@@ -4,24 +4,50 @@ version = "0.0.1"
 description = "Train models on pooled, unreliable hardware by sharing only seeds and scores."
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "UmamAlamin" }]
+keywords = ["evolution strategies", "distributed training", "pytorch", "llm", "reproducibility"]
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: C",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "numpy>=2.1",
     "torch>=2.14",
 ]
 
+[project.optional-dependencies]
+llm = [
+    "transformers>=4.50",
+    "safetensors>=0.4",
+]
+
 [dependency-groups]
 dev = [
+    "seedling[llm]",
     "pytest>=8.3",
     "matplotlib>=3.9",
     "xxhash>=4.0.1",
 ]
 
-[build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+[project.urls]
+Repository = "https://github.com/4arkeinlvy/seedling"
 
-[tool.hatch.build.targets.wheel]
-packages = ["seedling"]
+[project.scripts]
+seedling = "seedling.cli:main"
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["seedling*"]
+
+[tool.setuptools.package-data]
+seedling = ["py.typed", "assets/*.txt"]
 
 [tool.uv]
 # NixOS: uv's own Python runs through nix-ld and can load pip wheels such as torch.
@@ -39,7 +65,8 @@ explicit = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-ra -m 'not heavy'"
+addopts = "-ra -m 'not heavy and not llm'"
 markers = [
     "heavy: child processes import torch (~1 GB extra RAM). Run with: uv run pytest -m heavy",
+    "llm: downloads and runs Qwen2.5-0.5B-Instruct on the GPU. Run with: uv run pytest -m llm",
 ]

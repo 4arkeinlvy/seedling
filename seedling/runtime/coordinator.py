@@ -15,21 +15,25 @@ from collections.abc import Callable
 import numpy as np
 
 from seedling.es.es import step_seeds
-from seedling.exact.integer_es import integer_coefficients, replay
+from seedling.exact.integer_es import integer_coefficients
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.runtime import protocol as p
 from seedling.runtime.config import RunConfig
 from seedling.runtime.journal import Journal
-from seedling.runtime.tasks import create_task
+from seedling.runtime.tasks import create_workload
+from seedling.runtime.workload import Workload, replay_workload
 
 Clock = Callable[[], float]
 WAIT_SECONDS = 0.05
 
 
-def initial_state(config: RunConfig, task_factory: Callable = create_task) -> FixedPointState:
-    task = task_factory(config.task, **config.task_args)
-    return FixedPointState.from_float(task.init(config.seed), config.frac_bits)
+def build_workload(config: RunConfig, factory: Callable[..., Workload] = create_workload) -> Workload:
+    return factory(config.task, **config.task_args)
+
+
+def initial_state(config: RunConfig, factory: Callable[..., Workload] = create_workload) -> FixedPointState:
+    return build_workload(config, factory).initial_state(config.seed, config.frac_bits)
 
 
 class Coordinator:
@@ -38,12 +42,13 @@ class Coordinator:
         config: RunConfig,
         journal: Journal,
         clock: Clock = time.monotonic,
-        task_factory: Callable = create_task,
+        workload_factory: Callable[..., Workload] = create_workload,
     ):
         self.config = config
         self.journal = journal
         self.clock = clock
-        self.initial = initial_state(config, task_factory)
+        self.workload = build_workload(config, workload_factory)
+        self.initial = self.workload.initial_state(config.seed, config.frac_bits)
         self.initial_digest = self.initial.digest()
         journal.open(config, self.initial_digest)
         self.records = journal.records()
@@ -79,7 +84,7 @@ class Coordinator:
             start, state = snapshot
         else:
             start, state = 0, self.initial
-        return replay(state, self.records[start:])
+        return replay_workload(self.workload, state, self.records[start:])
 
     # ---------------------------------------------------------------- steps
 
@@ -105,7 +110,7 @@ class Coordinator:
         coefs = integer_coefficients(f_plus, f_minus, self.config.lr, self.config.sigma, self.config.frac_bits)
         record = StepRecord(self.step, tuple(self.seeds[i] for i in pairs), tuple(coefs))
         self.journal.append(record)
-        self.state.apply(record)
+        self.workload.apply(self.state, record)
         self.records.append(record)
         if self.config.snapshot_every and self.step % self.config.snapshot_every == 0:
             self.journal.write_snapshot(self.state, self.step)

@@ -1,46 +1,53 @@
-"""Task registry: workers and coordinator build the same Task from (name, args)."""
+"""Workload registry: coordinator and workers build the same Workload from (name, args)."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
 
-from seedling.tasks.base import Task
+from seedling.runtime.workload import VectorWorkload, Workload
 
-TaskFactory = Callable[..., Task]
-_REGISTRY: dict[str, TaskFactory] = {}
+WorkloadFactory = Callable[..., Workload]
+_REGISTRY: dict[str, WorkloadFactory] = {}
 
 
-def register(name: str) -> Callable[[TaskFactory], TaskFactory]:
-    def decorate(factory: TaskFactory) -> TaskFactory:
+def register(name: str) -> Callable[[WorkloadFactory], WorkloadFactory]:
+    def decorate(factory: WorkloadFactory) -> WorkloadFactory:
         _REGISTRY[name] = factory
         return factory
 
     return decorate
 
 
-def create_task(name: str, **args: Any) -> Task:
+def create_workload(name: str, **args: Any) -> Workload:
     if name not in _REGISTRY:
-        raise KeyError(f"unknown task {name!r}; known: {sorted(_REGISTRY)}")
+        raise KeyError(f"unknown workload {name!r}; known: {sorted(_REGISTRY)}")
     return _REGISTRY[name](**args)
 
 
 @register("quadratic")
-def _quadratic(**args: Any) -> Task:
+def _quadratic(**args: Any) -> Workload:
     from seedling.tasks.quadratic import QuadraticTask
 
-    return QuadraticTask(**args)
+    return VectorWorkload(QuadraticTask(**args))
 
 
 @register("cartpole")
-def _cartpole(**args: Any) -> Task:
+def _cartpole(**args: Any) -> Workload:
     from seedling.tasks.cartpole import CartPoleTask
 
-    return CartPoleTask(**args)
+    return VectorWorkload(CartPoleTask(**args))
 
 
 @register("mnist")
-def _mnist(**args: Any) -> Task:
+def _mnist(**args: Any) -> Workload:
     from seedling.tasks.mnist import MnistTask
 
-    return MnistTask(**args)
+    return VectorWorkload(MnistTask(**args))
+
+
+@register("countdown")
+def _countdown(**args: Any) -> Workload:
+    from seedling.llm.workload import CountdownWorkload
+
+    return CountdownWorkload(**args)

@@ -64,7 +64,32 @@ static void thread_count_does_not_matter(void) {
     free(four);
 }
 
+static void lowrank_matches_naive_loop_and_threads(void) {
+    enum { ROWS = 300, COLS = 257, K = 4 };
+    const uint64_t seeds[K] = {11, 22, 33, 44};
+    const int32_t coefs[K] = {5, -9, 1000, -1};
+    int8_t a[COLS], b[ROWS];
+    int32_t *got = calloc(ROWS * COLS, sizeof *got), *want = calloc(ROWS * COLS, sizeof *want);
+    int32_t *four = calloc(ROWS * COLS, sizeof *four);
+    for (int j = 0; j < K; j++) {
+        sl_rademacher_i8(seeds[j], 6, 0, a, COLS);
+        sl_rademacher_i8(seeds[j], 7, 0, b, ROWS);
+        for (int r = 0; r < ROWS; r++)
+            for (int c = 0; c < COLS; c++) want[r * COLS + c] += coefs[j] * b[r] * a[c];
+    }
+    sl_set_num_threads(1);
+    expect(sl_apply_lowrank_i32(got, ROWS, COLS, seeds, coefs, K, 6, 7) == 0, "lowrank returns 0");
+    sl_set_num_threads(4);
+    sl_apply_lowrank_i32(four, ROWS, COLS, seeds, coefs, K, 6, 7);
+    expect(memcmp(got, want, ROWS * COLS * sizeof *got) == 0, "lowrank == naive loop");
+    expect(memcmp(got, four, ROWS * COLS * sizeof *got) == 0, "lowrank: 1 thread == 4 threads");
+    free(got);
+    free(want);
+    free(four);
+}
+
 int main(void) {
+    lowrank_matches_naive_loop_and_threads();
     matches_naive_loop();
     saturates();
     thread_count_does_not_matter();

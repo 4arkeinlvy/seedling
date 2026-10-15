@@ -8,7 +8,7 @@ Same ask/tell loop as seedling.es.ES, with two changes:
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import torch
@@ -51,8 +51,10 @@ class IntegerES:
         lr: float = 0.05,
         seed: int = 0,
         shaper: FitnessShaper = centered_ranks,
+        apply: Callable[[FixedPointState, StepRecord], None] = FixedPointState.apply,
     ):
         self.state = state
+        self.apply = apply
         self.pop = pop
         self.sigma = sigma
         self.lr = lr
@@ -70,7 +72,7 @@ class IntegerES:
     def tell(self, seeds: Sequence[int], f_plus: np.ndarray, f_minus: np.ndarray) -> StepRecord:
         coefs = integer_coefficients(f_plus, f_minus, self.lr, self.sigma, self.state.frac_bits, self.shaper)
         record = StepRecord(self.step, tuple(seeds), tuple(coefs))
-        self.state.apply(record)
+        self.apply(self.state, record)
         self.step += 1
         return record
 
