@@ -33,10 +33,18 @@ def pack(tokens: np.ndarray) -> str:
     return base64.b64encode(zlib.compress(header + tokens.tobytes(), 6)).decode()
 
 
-def unpack(text: str, max_tokens: int = 1 << 24) -> np.ndarray:
-    """Inverse of pack. Raises ValueError on anything malformed (the text comes from a peer)."""
+MAX_TOKENS = 1 << 22  # 4M token ids (16 MB) per claim: far above any real completion batch
+
+
+def unpack(text: str, max_tokens: int = MAX_TOKENS) -> np.ndarray:
+    """Inverse of pack. Raises ValueError on anything malformed: the text comes from a peer,
+    so decompression stops at the size a real claim could have (no zip bombs)."""
+    limit = 8 + 4 * max_tokens
     try:
-        raw = zlib.decompress(base64.b64decode(text, validate=True), bufsize=1 << 16)
+        inflater = zlib.decompressobj()
+        raw = inflater.decompress(base64.b64decode(text, validate=True), limit)
+        if inflater.unconsumed_tail or not inflater.eof:
+            raise ValueError("over the size limit, or cut short")
     except (ValueError, zlib.error) as e:
         raise ValueError(f"bad evidence: {e}") from None
     if len(raw) < 8:

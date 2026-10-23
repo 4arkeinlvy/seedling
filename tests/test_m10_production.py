@@ -102,6 +102,7 @@ def test_joining_needs_a_valid_token_and_a_lie_revokes_it(tokens, tmp_path):
     config = quadratic(pop=1, pairs_per_task=1)
     c = Coordinator(config, Journal(tmp_path / "run"), audit=REFEREE, access=access)
     assert isinstance(c.handle(p.Hello("x", "wrong")), p.Error)
+    assert isinstance(c.handle(p.Hello("x" * 10_000, SECRET_A)), p.Error), "names are short: they go to disk"
     honest = c.handle(p.Hello("gpu0", SECRET_A)).worker_id
     liar, liar2 = (c.handle(p.Hello(f"gpu{k}", SECRET_B)).worker_id for k in (1, 2))
     assert isinstance(c.handle(p.Hello("gpu3", SECRET_B)), p.Error), "at most 2 ids per token"
@@ -311,6 +312,10 @@ def test_evidence_round_trips_and_rejects_garbage():
 
     tokens = np.arange(12, dtype=np.int32).reshape(3, 4)
     assert np.array_equal(evidence.unpack(evidence.pack(tokens)), tokens)
+    bomb = base64.b64encode(zlib.compress(np.array([64, 2**20], np.int32).tobytes() + bytes(2**28))).decode()
+    assert len(bomb) < 2**20, "a 256 MB claim compresses to a few hundred KB"
+    with pytest.raises(ValueError):
+        evidence.unpack(bomb)  # refused without inflating it
     for bad in ["not base64!", base64.b64encode(b"short").decode(),
                 base64.b64encode(zlib.compress(np.array([5, 5], np.int32).tobytes())).decode(),
                 base64.b64encode(zlib.compress(np.array([10**6, 10**6], np.int32).tobytes())).decode()]:  # fmt: skip

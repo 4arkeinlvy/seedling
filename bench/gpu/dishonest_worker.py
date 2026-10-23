@@ -17,6 +17,7 @@ import socket
 
 from seedling.runtime import Worker
 from seedling.runtime import protocol as p
+from seedling.runtime.access import client_tls
 from seedling.runtime.transport import connect
 
 BEHAVIOURS = ("flip", "lazy", "inflate")
@@ -49,8 +50,11 @@ def main() -> None:
     parser.add_argument("--connect", required=True)
     parser.add_argument("--behaviour", choices=BEHAVIOURS, default="flip")
     parser.add_argument("--id", default=f"liar-{socket.gethostname()}-{os.getpid()}")
+    parser.add_argument("--token", default=os.environ.get("SEEDLING_TOKEN", ""))
+    parser.add_argument("--tls-ca", help="CA or certificate to verify a tcps:// or https:// coordinator")
     ns = parser.parse_args()
-    worker = LyingWorker(connect(ns.connect), ns.id, behaviour=ns.behaviour)
+    tls = client_tls(ns.tls_ca) if ns.tls_ca else None
+    worker = LyingWorker(connect(ns.connect, tls), ns.id, behaviour=ns.behaviour, token=ns.token)
     try:
         digest = worker.run()
         print(json.dumps({"worker": ns.id, "caught": False, "digest": digest, **vars(worker.stats)}))

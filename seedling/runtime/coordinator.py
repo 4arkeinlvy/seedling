@@ -35,6 +35,7 @@ from seedling.runtime.workload import Workload, replay_workload
 Clock = Callable[[], float]
 WAIT_SECONDS = 0.05
 REFEREE = "referee"
+MAX_EVIDENCE = 4 * 2**20  # characters of evidence per pair: a real claim is tens of KB
 
 
 def build_workload(config: RunConfig, factory: Callable[..., Workload] = create_workload) -> Workload:
@@ -284,6 +285,8 @@ class Coordinator:
     # ---------------------------------------------------------------- handlers
 
     def _hello(self, message: p.Hello) -> p.Message:
+        if len(message.worker_id) > 128 or len(message.token) > 256:
+            return p.Error("worker name or token too long")
         if not self.secure:
             return p.Welcome(self.config.to_json(), self.initial_digest, message.worker_id)
         token = ""
@@ -351,6 +354,8 @@ class Coordinator:
         if not (len(pairs) == len(message.f_plus) == len(message.f_minus)) or len(set(pairs)) != len(pairs):
             return p.Ack(False, "malformed")
         if message.evidence and len(message.evidence) != len(pairs):
+            return p.Ack(False, "malformed")
+        if any(len(e) > MAX_EVIDENCE for e in message.evidence):
             return p.Ack(False, "malformed")
         if not all(0 <= i < self.config.pop for i in pairs):
             return p.Ack(False, "malformed")
