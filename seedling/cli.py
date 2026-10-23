@@ -75,7 +75,9 @@ def _new_config(ns: argparse.Namespace) -> RunConfig:
 
 def run_coordinator(ns: argparse.Namespace) -> int:
     config = _config_from(ns)
-    audit = AuditPolicy(rate=ns.audit_rate, probation=ns.probation, rtol=ns.audit_rtol)
+    audit = AuditPolicy(
+        rate=ns.audit_rate, probation=ns.probation, rtol=ns.audit_rtol, aggregate=ns.aggregate, replicas=ns.replicas
+    )
     coordinator = Coordinator(config, Journal(ns.run_dir), audit=audit)
     handler = serialized(coordinator.handle)
     servers = []
@@ -167,6 +169,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="audit every pair of a new worker until it has passed this many audits")
     c.add_argument("--audit-rtol", type=float, default=1e-3,
                    help="relative tolerance when two workers' scores are compared")
+    c.add_argument("--aggregate", choices=("vote", "median"), default="vote",
+                   help="median: score every pair --replicas times and take the median (no bans)")
+    c.add_argument("--replicas", type=int, default=3, help="scorers per pair with --aggregate median")
     c.set_defaults(run=run_coordinator)
 
     t = sub.add_parser("train", help="train in this process (no network)")

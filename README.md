@@ -8,7 +8,9 @@ from a 64-bit seed, so a whole training step travels as a few hundred bytes, wha
 model size. Each worker replays the same steps with exact integer arithmetic in C, so every
 copy of the model stays **bit-for-bit identical**: on a laptop CPU, a laptop GPU, or a
 Kaggle notebook behind NAT, even when workers or the coordinator crash. Workers you don't
-trust are spot-checked by other workers, and liars are banned before their scores count.
+trust are spot-checked by other workers, and liars are banned before their scores count;
+[RESULTS.md](RESULTS.md) measures that on three workloads, against the robust-aggregation
+baseline from the literature.
 
 Built from first principles as a learning project: sockets, collectives, DDP, ES, a
 counter-based RNG, a write-ahead journal and an LLM fine-tuning demo, all written and tested
@@ -30,7 +32,12 @@ A 40-second explainer, made with Manim (`video/explainer.py`). Full quality: [mp
 | Exact update in C | 5.8 billion sign-adds/s, identical bits for any thread count |
 | Chaos test | `kill -9` of workers and coordinator: final weights bit-identical to a clean run |
 | Dishonest workers (MNIST, 3 of 10 reverse their scores) | 79.3% without defense; **87.8% with spot checks**, bit-identical to an all-honest run, for 10% extra work |
+| Same, on 3 workloads (MNIST, HalfCheetah, a GPT)† | spot checks (1.1x work): every flipping or lazy liar banned before a lie was committed, runs bit-identical to all-honest (sleepers: 0-36 lies per run); replicate x3 + median (3x work, CyBeR-0-style): 18% of pairs still lies. [RESULTS.md](RESULTS.md) |
+| ES on HalfCheetah-v5 (MuJoCo), 150 steps† | return 4603 (best of 3 seeds); dynamics bit-identical to gymnasium's |
+| A character GPT trained by low-rank ES alone† | 0.8M parameters, validation loss 4.10 -> 3.16 nats/char in 200 steps |
 | Qwen2.5-0.5B on Countdown | see [Qwen experiment](#qwen-experiment) |
+
+† measured on 4 cloud CPU cores.
 
 ## How it works
 
@@ -54,7 +61,7 @@ workers (any machine)                                   coordinator
 ## Install
 
 ```bash
-pip install "seedling[llm] @ git+https://github.com/4arkeinlvy/seedling"
+pip install "seedling[llm,rl] @ git+https://github.com/4arkeinlvy/seedling"   # rl: MuJoCo
 ```
 
 Linux, Python 3.13, a C compiler with OpenMP (the C core is built during install).
@@ -75,7 +82,11 @@ Train in one process:
 ```bash
 seedling train --task cartpole --steps 30
 seedling train --task mnist --steps 300 --pop 50 --sigma 0.05 --lr 0.01
+seedling train --task halfcheetah --steps 150 --pop 32 --sigma 0.05 --lr 0.05      # MuJoCo
+seedling train --task tinylm --steps 200 --pop 32 --sigma 0.01 --lr 0.002 --frac-bits 24
 python -m seedling.llm.train --steps 40           # Qwen2.5-0.5B on Countdown (GPU)
+python -m seedling.llm.train --protocol tinyzero --pop 30 --sigma 0.001 --lr 2e-5 \
+    --max-new-tokens 512 --run-dir runs/cd     # the setup of Qiu et al. (2025), see bench/gpu
 ```
 
 Train across machines:
@@ -178,21 +189,30 @@ of `N` pairs report anything at all, the antithetic weights move by at most
 - **Sybils.** Real Sybil resistance needs authenticated or costly identities; probation only
   makes each new identity pay in honest work first.
 
+**At scale.** [RESULTS.md](RESULTS.md) repeats the experiment on HalfCheetah (MuJoCo) and on
+a GPT trained from scratch by ES, against replicate x3 + median, the robust-aggregation
+approach of Byzantine-robust zeroth-order learning (CyBeR-0, Egger et al. 2025). It also
+measures how far honest scores drift with batch shape, thread count and precision, and
+compares seedling with recent work (MeZO, FedKSeed, EGGROLL, Qiu et al., TOPLOC, Verde).
+
 ## Layout
 
 ```
 csrc/            C core (ctypes): ring all-reduce, Philox RNG, exact integer updates, xxHash64
 seedling/
   foundation/    launcher, framing, TCP store, collectives, DDP
-  tasks/         workloads: tiny GPT, DDP training, CartPole (physics from scratch), MNIST
+  tasks/         workloads: tiny GPT, DDP training, CartPole (physics from scratch), MNIST,
+                 MuJoCo HalfCheetah/Hopper (mujoco.py), a GPT trained by low-rank ES (tiny_lm.py)
   es/            float ES: noise, ask/tell, optimizers, evaluators, BatchedMLP
   exact/         bit-exact core: fixed-point state, step records, integer ES, replay
   runtime/       coordinator, workers, journal, TCP/HTTP transports, Workload interface,
                  spot checks and bans (audit.py), a simulator of dishonest workers (simulate.py)
-  llm/           Countdown, low-rank population layers, Qwen workload
+  llm/           low-rank population layers, a shared LLM workload base, Countdown (incl. the
+                 TinyZero protocol of Qiu et al.), SST-2 by label-word likelihood (MeZO)
   cli.py         seedling train | coordinator | worker | replay
-tests/           the spec: 270 Python tests (heavy = multi-process, llm = GPU) + 5 C test programs
-bench/           all-reduce bandwidth, DDP step time, ES curves, dishonest workers
+tests/           the spec: 287 Python tests (heavy = multi-process, llm = GPU) + 5 C test programs
+bench/           all-reduce bandwidth, DDP step time, ES curves, dishonest workers (bench_scale:
+                 defenses x attacks x workloads), honest score agreement, gpu/ kit for user runs
 assets/          the rendered explainer (GIF for the README, mp4), the dishonest-workers figure
 video/           its Manim source (video/explainer.py)
 ```
@@ -210,6 +230,7 @@ video/           its Manim source (video/explainer.py)
 | [x] | **M6** LLM | low-rank exact ES on Qwen2.5-0.5B-Instruct (Countdown) |
 | [x] | **M7** package | pip-installable wheel with the C core, `seedling` CLI, CI |
 | [x] | **M8** dishonest workers | strict protocol checks, spot checks, probation, vote and ban, influence bound, attack simulator |
+| [x] | **M9** benchmarks at scale | MuJoCo locomotion, a GPT trained by ES, SST-2 and TinyZero-Countdown workloads, a CyBeR-0-style baseline, honest-agreement study, GPU kit, related work |
 
 Next ideas: Raft-replicated journal (no single point of failure), authenticated worker
 identities (Sybil resistance), int8 forward kernels.
