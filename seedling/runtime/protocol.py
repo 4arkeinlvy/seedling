@@ -96,6 +96,7 @@ class Sync(Message):
 @dataclass(frozen=True)
 class GetWork(Message):
     worker_id: str
+    fingerprint: str = ""  # the worker's base model, for workloads that have one (M10)
 
 
 @dataclass(frozen=True)

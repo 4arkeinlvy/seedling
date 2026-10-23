@@ -27,6 +27,7 @@ from seedling.exact.state import FixedPointState
 from seedling.runtime import protocol as p
 from seedling.runtime.access import Access
 from seedling.runtime.audit import AuditPolicy, Ledger, Opinion, agree, vote
+from seedling.runtime.journal import atomic_write
 from seedling.runtime.config import RunConfig
 from seedling.runtime.journal import Journal
 from seedling.runtime.tasks import create_workload
@@ -74,6 +75,9 @@ class Coordinator:
         # Secure mode: ids are issued (and checked) by this coordinator, not chosen by workers.
         self.secure = audit.enabled or access.required
         self.ledger = Ledger.load(journal.dir / "audit.json") if self.secure else Ledger()
+        # The base model every worker must run: set by the first worker that reports one.
+        self.fingerprint_path = journal.dir / "fingerprint"
+        self.fingerprint = self.fingerprint_path.read_text() if self.fingerprint_path.exists() else ""
         self.workload = build_workload(config, workload_factory)
         self.initial = self.workload.initial_state(config.seed, config.frac_bits)
         self.initial_digest = self.initial.digest()
@@ -329,6 +333,14 @@ class Coordinator:
         if refused := self._refuse(message.worker_id):
             return refused
         self.last_seen[message.worker_id] = self.clock()
+        if message.fingerprint and message.fingerprint != self.fingerprint:
+            if self.fingerprint:
+                return p.Error(
+                    f"this worker runs a different base model ({message.fingerprint}) than the run "
+                    f"({self.fingerprint}); delete {self.fingerprint_path} if the run's is the wrong one"
+                )
+            self.fingerprint = message.fingerprint
+            atomic_write(self.fingerprint_path, self.fingerprint.encode())
         if self.finished:
             return p.Finished(self.step, self.state.digest())
         now = self.clock()

@@ -1,6 +1,6 @@
 [project]
 name = "seedling"
-version = "0.0.1"
+version = "0.1.0"
 description = "Train models on pooled, unreliable hardware by sharing only seeds and scores."
 readme = "README.md"
 requires-python = ">=3.13"

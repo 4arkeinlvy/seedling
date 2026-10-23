@@ -168,20 +168,30 @@ class _ThreadingTCP(_TlsAccept, socketserver.ThreadingTCPServer):
 
 class TcpServer(Server):
     def __init__(self, handler: Handler, host: str = "0.0.0.0", port: int = 7070, tls: ssl.SSLContext | None = None):
+        open_connections: set[socket.socket] = set()
+        lock = threading.Lock()
+
         class Connection(socketserver.BaseRequestHandler):
             def handle(self) -> None:
-                if not _handshake(self.request):
-                    return
-                self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                while True:
-                    try:
-                        data = recv_msg(self.request, MAX_REQUEST)
-                    except (ConnectionError, OSError):
+                with lock:
+                    open_connections.add(self.request)
+                try:
+                    if not _handshake(self.request):
                         return
-                    send_msg(self.request, _respond(handler, data))
+                    self.request.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                    while True:
+                        try:
+                            data = recv_msg(self.request, MAX_REQUEST)
+                        except (ConnectionError, OSError):
+                            return
+                        send_msg(self.request, _respond(handler, data))
+                finally:
+                    with lock:
+                        open_connections.discard(self.request)
 
         self._server = _ThreadingTCP((host, port), Connection)
         self._server.tls = tls
+        self._connections, self._lock = open_connections, lock
 
     @property
     def port(self) -> int:
@@ -191,8 +201,17 @@ class TcpServer(Server):
         self._server.serve_forever(poll_interval=0.1)
 
     def shutdown(self) -> None:
+        """Stop accepting, and hang up on every connected worker (they would otherwise keep
+        being served by their connection threads)."""
         self._server.shutdown()
         self._server.server_close()
+        with self._lock:
+            connections = list(self._connections)
+        for sock in connections:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
 
 
 class _ThreadingHTTP(_TlsAccept, http.server.ThreadingHTTPServer):

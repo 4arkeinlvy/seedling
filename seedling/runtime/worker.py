@@ -90,6 +90,8 @@ class Worker:
         self.initial = self.workload.initial_state(self.config.seed, self.config.frac_bits)
         if self.initial.digest() != welcome.initial_digest:
             raise ReplicaMismatch("initial state differs from the coordinator's")
+        fingerprint = getattr(self.workload, "fingerprint", None)
+        self.fingerprint = fingerprint() if fingerprint else ""
         self._reset()
 
     def _reset(self) -> None:
@@ -149,7 +151,7 @@ class Worker:
         self._join()
         while True:
             self._sync()
-            reply = expect(self._call(p.GetWork(self.worker_id)), (p.Finished, p.Wait, p.Work))
+            reply = expect(self._call(p.GetWork(self.worker_id, self.fingerprint)), (p.Finished, p.Wait, p.Work))
             if isinstance(reply, p.Finished):
                 self._sync()
                 if self.state.digest() != reply.digest:

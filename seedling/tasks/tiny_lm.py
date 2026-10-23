@@ -19,6 +19,7 @@ import torch
 from seedling.data import CharTokenizer, get_batch, load_text, split
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
+from seedling.llm.base import model_fingerprint
 from seedling.llm.lowrank import PerturbableModel, apply_lowrank, plan_layers
 from seedling.tasks.tiny_gpt import GPTConfig, TinyGPT
 
@@ -56,7 +57,11 @@ class TinyLMWorkload:
             if isinstance(m, torch.nn.Linear)
         ]
         self.specs = plan_layers(shapes)
+        self._fingerprint = model_fingerprint("tinylm", self.model)
         self.net = PerturbableModel(self.model, self.specs)
+
+    def fingerprint(self) -> str:
+        return self._fingerprint
 
     @property
     def trainable_parameters(self) -> int:

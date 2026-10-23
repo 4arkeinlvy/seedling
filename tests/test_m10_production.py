@@ -503,3 +503,85 @@ def test_a_late_answer_to_an_expired_assignment_is_not_an_audit(tmp_path):
     c.handle(p.GetWork(auditor))
     submit(c, auditor, [0], true_scores(c, [0]))
     assert c.step == 1
+
+
+# ------------------------------------------------------------------ the same base model everywhere
+
+
+def test_a_fingerprint_names_the_base_weights_not_the_trained_delta():
+    from seedling.llm.base import model_fingerprint
+    from tests.test_m6_llm import tiny_qwen
+
+    assert model_fingerprint("m", tiny_qwen(0)) == model_fingerprint("m", tiny_qwen(0))
+    assert model_fingerprint("m", tiny_qwen(0)) != model_fingerprint("m", tiny_qwen(1))
+    w = _countdown()
+    before = w.fingerprint()
+    state = w.initial_state(0, 20)
+    state.values[:] = 7  # a trained Delta, loaded into the weights
+    w.perturbable().load(state)
+    assert w.fingerprint() == before, "training does not change which base model it is"
+
+
+def test_a_worker_with_other_base_weights_is_refused(tmp_path):
+    config = quadratic()
+    c = Coordinator(config, Journal(tmp_path))
+    assert isinstance(c.handle(p.GetWork("a", "model#1111")), p.Work), "the first fingerprint sets the run's"
+    refused = c.handle(p.GetWork("b", "model#2222"))
+    assert isinstance(refused, p.Error) and "different base model" in refused.reason
+    assert isinstance(c.handle(p.GetWork("c")), p.Message), "workloads without a fingerprint send none"
+    again = Coordinator(config, Journal(tmp_path))
+    assert isinstance(again.handle(p.GetWork("b", "model#2222")), p.Error), "remembered across restarts"
+
+
+def test_real_workers_with_different_models_cannot_mix(tmp_path):
+    import threading
+
+    from seedling.runtime import Worker, make_server, serialized
+    from seedling.runtime.transport import TcpTransport
+    from tests.test_m6_llm import StubCodec, tiny_qwen
+
+    def factory_for(seed):
+        def factory(name, **args):
+            from seedling.llm.workload import CountdownWorkload
+
+            return CountdownWorkload(
+                last_layers=1, prompts_per_step=2, max_new_tokens=3, device="cpu", dtype="float32",
+                model=tiny_qwen(seed), codec=StubCodec(),
+            )  # fmt: skip
+
+        return factory
+
+    config = RunConfig(task="countdown", steps=1, pop=2, sigma=0.05, lr=0.05, frac_bits=16, pairs_per_task=2)
+    coordinator = Coordinator(config, Journal(tmp_path), workload_factory=factory_for(0))
+    server = make_server("tcp", serialized(coordinator.handle), "127.0.0.1", 0).start()
+    outcome = {}
+
+    def run(name, seed):
+        try:
+            worker = Worker(TcpTransport("127.0.0.1", server.port), name, workload_factory=factory_for(seed))
+            outcome[name] = worker.run()
+        except RuntimeError as e:
+            outcome[name] = str(e)
+
+    first = threading.Thread(target=run, args=("same", 0))
+    first.start()
+    first.join(timeout=60)
+    other = threading.Thread(target=run, args=("other", 1))
+    other.start()
+    other.join(timeout=60)
+    server.shutdown()
+    assert outcome["same"] == coordinator.state.digest()
+    assert "different base model" in outcome["other"]
+
+
+def test_shutting_a_server_down_hangs_up_on_connected_workers(tmp_path):
+    from seedling.runtime import make_server, serialized
+    from seedling.runtime.transport import TcpTransport
+
+    c = Coordinator(quadratic(), Journal(tmp_path))
+    server = make_server("tcp", serialized(c.handle), "127.0.0.1", 0).start()
+    transport = TcpTransport("127.0.0.1", server.port, timeout=5)
+    assert isinstance(transport.request(p.Hello("w")), p.Welcome), "connected"
+    server.shutdown()
+    with pytest.raises(ConnectionError):
+        transport.request(p.GetWork("w"))  # before the fix, the open connection was still served

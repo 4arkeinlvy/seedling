@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+from seedling import _c
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.llm.codec import ChatCodec, HFChatCodec
@@ -32,6 +33,21 @@ def linear_shapes(model: nn.Module, last_layers: int, modules: Sequence[str]) ->
             weight = model.get_submodule(name).weight
             shapes.append((name, weight.shape[0], weight.shape[1]))
     return shapes
+
+
+def model_fingerprint(name: str, model: nn.Module) -> str:
+    """The hub revision a model was loaded from, or else a hash of its weights.
+
+    The run's state holds only the trained Delta: two workers with different base weights
+    (another revision, a corrupted download) share every digest yet generate different text,
+    and would ban each other. A revision does not depend on the dtype a worker loads it in."""
+    revision = getattr(model.config, "_commit_hash", None)
+    if revision:
+        return f"{name}@{revision}"
+    h = 0
+    for key, tensor in sorted(model.state_dict().items()):
+        h = _c.xxh64(tensor.detach().float().cpu().contiguous().numpy(), seed=h)
+    return f"{name}#{h:016x}"
 
 
 def positions(attention_mask: torch.Tensor) -> torch.Tensor:
@@ -64,6 +80,7 @@ class LowRankLLMWorkload:
         self._codec = codec
         self._tokenizer = None
         self._perturbable: PerturbableModel | None = None
+        self._fingerprint = ""
         self.specs: list[LayerSpec] = plan_layers(linear_shapes(self._skeleton(), last_layers, self.modules))
 
     # ---------------------------------------------------------------- model loading
@@ -85,8 +102,14 @@ class LowRankLLMWorkload:
 
                 model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype=self.dtype)
             model = model.to(self.device).eval()
+            self._fingerprint = model_fingerprint(self.model_name, model)  # base weights, before any Delta
             self._perturbable = PerturbableModel(model, self.specs)
         return self._perturbable
+
+    def fingerprint(self) -> str:
+        """Which base model this worker runs (see model_fingerprint). Loads the model."""
+        self.perturbable()
+        return self._fingerprint
 
     def tokenizer(self):
         if self._tokenizer is None:
