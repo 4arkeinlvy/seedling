@@ -38,7 +38,12 @@ def send_msg(sock: socket.socket, payload) -> None:
         sock.sendall(view)
 
 
-def recv_msg(sock: socket.socket) -> bytes:
-    """Receive one framed message and return its payload."""
+def recv_msg(sock: socket.socket, max_bytes: int | None = None) -> bytes:
+    """Receive one framed message and return its payload.
+
+    A server must pass max_bytes: the length comes from the peer, and an 8-byte length of
+    2**63 would otherwise make it try to allocate that much memory."""
     (n,) = HEADER.unpack(recv_exact(sock, HEADER.size))
+    if max_bytes is not None and n > max_bytes:
+        raise ConnectionError(f"peer sent a {n}-byte message; the limit is {max_bytes}")
     return recv_exact(sock, n)

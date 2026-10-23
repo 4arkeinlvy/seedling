@@ -13,3 +13,4 @@ seedling/_libseedling*.so
 dist/
 *.egg-info/
 video/media/
+MUJOCO_LOG.TXT

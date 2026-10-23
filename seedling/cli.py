@@ -19,6 +19,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from seedling.runtime.access import Access, client_tls, server_tls
 from seedling.runtime.audit import AuditPolicy
 from seedling.runtime.config import RunConfig
 from seedling.runtime.coordinator import Coordinator, build_workload
@@ -75,14 +76,22 @@ def _new_config(ns: argparse.Namespace) -> RunConfig:
 
 def run_coordinator(ns: argparse.Namespace) -> int:
     config = _config_from(ns)
-    audit = AuditPolicy(rate=ns.audit_rate, probation=ns.probation, rtol=ns.audit_rtol)
-    coordinator = Coordinator(config, Journal(ns.run_dir), audit=audit)
+    audit = AuditPolicy(
+        rate=ns.audit_rate, probation=ns.probation, rtol=ns.audit_rtol, aggregate=ns.aggregate, replicas=ns.replicas,
+        referee=ns.referee,
+    )
+    access = Access.from_file(ns.tokens, max_ids_per_token=ns.max_ids_per_token) if ns.tokens else Access()
+    tls = server_tls(ns.tls_cert, ns.tls_key) if ns.tls_cert else None
+    coordinator = Coordinator(config, Journal(ns.run_dir), audit=audit, access=access)
     handler = serialized(coordinator.handle)
     servers = []
-    for url in ns.listen or ["tcp://0.0.0.0:7070"]:
+    for url in [*(ns.listen or ["tcp://0.0.0.0:7070"]), *([ns.metrics] if ns.metrics else [])]:
         parsed = urlparse(url)
-        servers.append(make_server(parsed.scheme, handler, parsed.hostname or "0.0.0.0", parsed.port or 0).start())
+        host, port = parsed.hostname or "0.0.0.0", parsed.port or 0
+        servers.append(make_server(parsed.scheme, handler, host, port, tls=tls, metrics=coordinator.metrics_text).start())
         print(f"listening on {parsed.scheme}://{parsed.hostname}:{servers[-1].port}", flush=True)
+    if access.required:
+        print(f"join tokens required ({len(access.tokens)} known)", flush=True)
     print(f"coordinator: {config.task}, step {coordinator.step}/{config.steps}", flush=True)
     last, banned = coordinator.step, set(coordinator.ledger.banned)
     while not coordinator.finished:
@@ -108,7 +117,9 @@ def run_worker(ns: argparse.Namespace) -> int:
         import torch
 
         torch.set_num_threads(ns.threads)
-    worker = Worker(connect(ns.connect), ns.id, max_retry_seconds=ns.max_retry)
+    tls = client_tls(ns.tls_ca) if ns.tls_ca else None
+    token = ns.token or os.environ.get("SEEDLING_TOKEN", "")
+    worker = Worker(connect(ns.connect, tls), ns.id, max_retry_seconds=ns.max_retry, token=token)
     digest = worker.run()
     print(json.dumps({"worker": ns.id, "digest": digest, **vars(worker.stats)}), flush=True)
     return 0
@@ -133,6 +144,13 @@ def run_replay(ns: argparse.Namespace) -> int:
     state = replay_workload(workload, initial, records)
     metrics = {} if ns.no_eval else workload.evaluate(state, len(records))
     print(json.dumps({"steps": len(records), "digest": state.digest(), **metrics}))
+    return 0
+
+
+def run_export(ns: argparse.Namespace) -> int:
+    from seedling.runtime.export import export_run
+
+    print(json.dumps(export_run(ns.run_dir, ns.out)), flush=True)
     return 0
 
 
@@ -167,6 +185,17 @@ def build_parser() -> argparse.ArgumentParser:
                    help="audit every pair of a new worker until it has passed this many audits")
     c.add_argument("--audit-rtol", type=float, default=1e-3,
                    help="relative tolerance when two workers' scores are compared")
+    c.add_argument("--aggregate", choices=("vote", "median"), default="vote",
+                   help="median: score every pair --replicas times and take the median (no bans)")
+    c.add_argument("--replicas", type=int, default=3, help="scorers per pair with --aggregate median")
+    c.add_argument("--referee", choices=("", "self"), default="",
+                   help="self: the coordinator scores disputed pairs itself and its verdict is final")
+    c.add_argument("--tokens", metavar="FILE", help="require join tokens: one name:secret per line")
+    c.add_argument("--max-ids-per-token", type=int, default=8)
+    c.add_argument("--tls-cert", help="certificate (PEM) for tcps:// and https:// listeners")
+    c.add_argument("--tls-key", help="private key (PEM) for --tls-cert")
+    c.add_argument("--metrics", metavar="URL",
+                   help="extra http(s)://host:port listener for GET /metrics (http listeners serve it too)")
     c.set_defaults(run=run_coordinator)
 
     t = sub.add_parser("train", help="train in this process (no network)")
@@ -179,12 +208,19 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--id", default=f"{socket.gethostname()}-{os.getpid()}")
     w.add_argument("--threads", type=int, default=0, help="torch CPU threads (0 = default)")
     w.add_argument("--max-retry", type=float, default=60.0)
+    w.add_argument("--token", default="", help="join token secret (or set SEEDLING_TOKEN)")
+    w.add_argument("--tls-ca", help="CA or self-signed certificate to verify a tcps:// or https:// coordinator")
     w.set_defaults(run=run_worker)
 
     r = sub.add_parser("replay", help="rebuild the final state from a run directory")
     r.add_argument("--run-dir", required=True)
     r.add_argument("--no-eval", action="store_true")
     r.set_defaults(run=run_replay)
+
+    e = sub.add_parser("export", help="write a run's final model in a standard format")
+    e.add_argument("--run-dir", required=True)
+    e.add_argument("--out", required=True, help="output folder (an HF model folder for LLM runs)")
+    e.set_defaults(run=run_export)
     return parser
 
 

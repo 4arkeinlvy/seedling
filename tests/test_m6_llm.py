@@ -5,6 +5,7 @@ The `llm` tests use the real Qwen2.5-0.5B-Instruct on the GPU: uv run pytest -m 
 """
 
 import copy
+import threading
 
 import numpy as np
 import pytest
@@ -21,7 +22,15 @@ from seedling.llm.workload import CountdownWorkload, linear_shapes
 transformers = pytest.importorskip("transformers")
 
 
+_BUILD = threading.Lock()  # building seeds the global RNG: two threads at once get different weights
+
+
 def tiny_qwen(seed: int = 0) -> torch.nn.Module:
+    with _BUILD:
+        return _build_tiny_qwen(seed)
+
+
+def _build_tiny_qwen(seed: int) -> torch.nn.Module:
     torch.manual_seed(seed)
     config = transformers.Qwen2Config(
         vocab_size=64,

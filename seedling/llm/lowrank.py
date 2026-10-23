@@ -119,6 +119,14 @@ class PerturbableModel:
     def device(self) -> torch.device:
         return self._base[0].device
 
+    def unwrap(self) -> nn.Module:
+        """Put the plain Linear layers back (holding whatever was loaded last) and return the
+        model, e.g. to save it. This PerturbableModel is unusable afterwards."""
+        for spec, layer in zip(self.specs, self.layers, strict=True):
+            _swap_module(self.model, spec.name, layer.base)
+        self.layers = []
+        return self.model
+
     @torch.no_grad()
     def load(self, state: FixedPointState) -> None:
         """Set every selected weight to W_base + Delta * unit (skipped if already loaded)."""

@@ -1,6 +1,6 @@
 [project]
 name = "seedling"
-version = "0.0.1"
+version = "0.1.0"
 description = "Train models on pooled, unreliable hardware by sharing only seeds and scores."
 readme = "README.md"
 requires-python = ">=3.13"
@@ -23,11 +23,15 @@ dependencies = [
 llm = [
     "transformers>=4.50",
     "safetensors>=0.4",
+    "pyarrow>=15",
+]
+rl = [
+    "gymnasium[mujoco]>=1.0",
 ]
 
 [dependency-groups]
 dev = [
-    "seedling[llm]",
+    "seedling[llm,rl]",
     "pytest>=8.3",
     "matplotlib>=3.9",
     "xxhash>=4.0.1",

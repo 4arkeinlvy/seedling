@@ -13,7 +13,8 @@ from seedling.exact.integer_es import IntegerES
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.runtime.config import RunConfig
-from seedling.runtime.workload import Workload
+from seedling.runtime.journal import Journal
+from seedling.runtime.workload import Workload, replay_workload
 
 
 @dataclass
@@ -29,15 +30,26 @@ def train_local(
     config: RunConfig,
     eval_every: int = 0,
     log: Callable[[dict], None] = lambda row: None,
+    journal: Journal | None = None,
 ) -> LocalRun:
+    """With a journal, every step is logged like the coordinator does (so `seedling replay`
+    and `seedling export` work), and a run started again resumes after its last step."""
     initial = workload.initial_state(config.seed, config.frac_bits)
     es = IntegerES(initial.copy(), config.pop, config.sigma, config.lr, config.seed, apply=workload.apply)
     run = LocalRun(initial, es.state)
-    for step in range(config.steps):
+    if journal is not None:
+        journal.open(config, initial.digest())
+        run.records = journal.records()
+        es.state = run.state = replay_workload(workload, initial, run.records)
+        es.step = len(run.records)
+    for step in range(es.step, config.steps):
         t0 = time.perf_counter()
         seeds = es.ask()
         f_plus, f_minus = workload.score(es.state, step, seeds, config.sigma)
-        run.records.append(es.tell(seeds, f_plus, f_minus))
+        record = es.tell(seeds, f_plus, f_minus)
+        if journal is not None:
+            journal.append(record)
+        run.records.append(record)
         row = {
             "step": step + 1,
             "mean_score": float(np.mean(np.r_[f_plus, f_minus])),

@@ -104,3 +104,57 @@ def reward(text: str, problem: Problem) -> float:
         return CORRECT
     closeness = max(0.0, 1.0 - abs(float(parsed[0]) - problem.target) / problem.target)
     return WELL_FORMED + CLOSENESS * closeness
+
+
+# ---------------------------------------------------------------- TinyZero protocol (Qiu et al. 2025)
+#
+# Qiu et al., "Evolution Strategies at Scale" (2025), fine-tune on the TinyZero Countdown set
+# (3-4 numbers) with TinyZero's prompt and score. Using the same data, prompt and score makes
+# our accuracies comparable with theirs.
+
+TINYZERO = "Jiayi-Pan/Countdown-Tasks-3to4"
+TINYZERO_SYSTEM = (
+    "You are a helpful assistant. You first thinks about the reasoning process in the mind "
+    "and then provides the user with the answer."
+)
+TINYZERO_PREFIX = "Let me solve this step by step.\n<think>"
+
+
+def tinyzero_prompt(problem: Problem) -> str:
+    return (
+        f"Using the numbers {list(problem.numbers)}, create an equation that equals {problem.target}. "
+        "You can use basic arithmetic operations (+, -, *, /) and each number can only be used once. "
+        "Show your work in <think> </think> tags. And return the final answer in <answer> </answer> tags, "
+        "for example <answer> (1 + 2) / 3 </answer>."
+    )
+
+
+def tinyzero_reward(text: str, problem: Problem) -> float:
+    """TinyZero's score: 0 without an <answer> block, 0.1 for any other answer, 1 if correct."""
+    found = ANSWER.findall(text)
+    if not found:
+        return WRONG
+    parsed = parse(found[-1].strip())
+    if parsed is not None and Counter(parsed[1]) == Counter(problem.numbers) and parsed[0] == problem.target:
+        return CORRECT
+    return WELL_FORMED
+
+
+def tinyzero_rows(rows: dict[str, list]) -> list[Problem]:
+    """Problems from the dataset's columns ("nums", "target")."""
+    return [Problem(tuple(int(n) for n in nums), int(t)) for nums, t in zip(rows["nums"], rows["target"], strict=True)]
+
+
+def load_tinyzero() -> list[Problem]:
+    """The whole TinyZero Countdown set (~490k problems), cached under seedling's data directory."""
+    import pyarrow.parquet as pq
+    from huggingface_hub import HfApi, hf_hub_download
+
+    from seedling.data import data_dir
+
+    files = sorted(f for f in HfApi().list_repo_files(TINYZERO, repo_type="dataset") if f.endswith(".parquet"))
+    problems: list[Problem] = []
+    for name in files:
+        path = hf_hub_download(TINYZERO, name, repo_type="dataset", cache_dir=data_dir() / "hf")
+        problems += tinyzero_rows(pq.read_table(path, columns=["nums", "target"]).to_pydict())
+    return problems

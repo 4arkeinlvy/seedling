@@ -82,8 +82,8 @@ def test_every_message_survives_encode_decode(message):
     [
         b"not json",
         json.dumps({"v": 99, "type": "Hello", "body": {"worker_id": "w"}}).encode(),
-        json.dumps({"v": 2, "type": "Pickle", "body": {}}).encode(),
-        json.dumps({"v": 2, "type": "Hello", "body": {"worker_id": "w", "extra": 1}}).encode(),
+        json.dumps({"v": p.PROTOCOL_VERSION, "type": "Pickle", "body": {}}).encode(),
+        json.dumps({"v": p.PROTOCOL_VERSION, "type": "Hello", "body": {"worker_id": "w", "token": "", "extra": 1}}).encode(),
     ],
 )
 def test_bad_messages_are_rejected(raw):
