@@ -1,7 +1,8 @@
 """The `seedling` command.
 
     seedling coordinator --task cartpole --steps 30 --run-dir runs/cartpole \
-        --listen tcp://0.0.0.0:7070 --listen http://0.0.0.0:7080
+        --listen tcp://0.0.0.0:7070 --listen http://0.0.0.0:7080 \
+        --audit-rate 0.1 --probation 10          (spot checks against dishonest workers)
     seedling worker --connect tcp://127.0.0.1:7070      (or http://... through a tunnel)
     seedling replay --run-dir runs/cartpole
     seedling train --task mnist --steps 300 --pop 50 --sigma 0.05 --lr 0.01   (one process)
@@ -18,6 +19,7 @@ import time
 from typing import Any
 from urllib.parse import urlparse
 
+from seedling.runtime.audit import AuditPolicy
 from seedling.runtime.config import RunConfig
 from seedling.runtime.coordinator import Coordinator, build_workload
 from seedling.runtime.journal import Journal
@@ -73,7 +75,8 @@ def _new_config(ns: argparse.Namespace) -> RunConfig:
 
 def run_coordinator(ns: argparse.Namespace) -> int:
     config = _config_from(ns)
-    coordinator = Coordinator(config, Journal(ns.run_dir))
+    audit = AuditPolicy(rate=ns.audit_rate, probation=ns.probation, rtol=ns.audit_rtol)
+    coordinator = Coordinator(config, Journal(ns.run_dir), audit=audit)
     handler = serialized(coordinator.handle)
     servers = []
     for url in ns.listen or ["tcp://0.0.0.0:7070"]:
@@ -81,9 +84,12 @@ def run_coordinator(ns: argparse.Namespace) -> int:
         servers.append(make_server(parsed.scheme, handler, parsed.hostname or "0.0.0.0", parsed.port or 0).start())
         print(f"listening on {parsed.scheme}://{parsed.hostname}:{servers[-1].port}", flush=True)
     print(f"coordinator: {config.task}, step {coordinator.step}/{config.steps}", flush=True)
-    last = coordinator.step
+    last, banned = coordinator.step, set(coordinator.ledger.banned)
     while not coordinator.finished:
         time.sleep(0.2)
+        for worker in set(coordinator.ledger.banned) - banned:
+            print(f"banned {worker}: {coordinator.ledger.banned[worker]}", flush=True)
+            banned.add(worker)
         if coordinator.step != last:
             last = coordinator.step
             print(f"step {last}/{config.steps}  digest {coordinator.state.digest()}", flush=True)
@@ -91,6 +97,8 @@ def run_coordinator(ns: argparse.Namespace) -> int:
     for server in servers:
         server.shutdown()
     metrics = {} if ns.no_eval else coordinator.workload.evaluate(coordinator.state, config.steps)
+    if audit.enabled:
+        metrics["banned"] = len(coordinator.ledger.banned)
     print(json.dumps({"digest": coordinator.state.digest(), **metrics}), flush=True)
     return 0
 
@@ -153,6 +161,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="tcp://host:port or http://host:port; repeat to serve both (default tcp://0.0.0.0:7070)")
     c.add_argument("--linger", type=float, default=2.0, help="seconds to keep serving after the end")
     c.add_argument("--no-eval", action="store_true", help="skip the final evaluation")
+    c.add_argument("--audit-rate", type=float, default=0.0,
+                   help="chance that a pair is re-scored by a second worker (0 = trust everyone)")
+    c.add_argument("--probation", type=int, default=0,
+                   help="audit every pair of a new worker until it has passed this many audits")
+    c.add_argument("--audit-rtol", type=float, default=1e-3,
+                   help="relative tolerance when two workers' scores are compared")
     c.set_defaults(run=run_coordinator)
 
     t = sub.add_parser("train", help="train in this process (no network)")

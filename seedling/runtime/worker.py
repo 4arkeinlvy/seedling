@@ -82,6 +82,7 @@ class Worker:
 
     def _join(self) -> None:
         welcome = expect(self._call(p.Hello(self.worker_id)), p.Welcome)
+        self.worker_id = welcome.worker_id  # with audits on, the coordinator issues our id
         self.config = RunConfig.from_json(welcome.config)
         self.workload = build_workload(self.config, self.workload_factory)
         self.initial = self.workload.initial_state(self.config.seed, self.config.frac_bits)

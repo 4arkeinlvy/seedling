@@ -63,7 +63,7 @@ def finish_step(coordinator: Coordinator) -> None:
         p.Sync(3),
         p.GetWork("w1"),
         p.Submit("w1", 2, [0, 1], [1.5, -2.0], [0.0, 3.25], "00ff"),
-        p.Welcome({"task": "cartpole", "steps": 3}, "abcd"),
+        p.Welcome({"task": "cartpole", "steps": 3}, "abcd", "w1~00ff"),
         p.Records([{"step": 0, "seeds": [1], "coefs": [2]}]),
         p.Snapshot(5, 20, "AAAA", "beef"),
         p.Work(4, [0, 3]),
@@ -82,8 +82,8 @@ def test_every_message_survives_encode_decode(message):
     [
         b"not json",
         json.dumps({"v": 99, "type": "Hello", "body": {"worker_id": "w"}}).encode(),
-        json.dumps({"v": 1, "type": "Pickle", "body": {}}).encode(),
-        json.dumps({"v": 1, "type": "Hello", "body": {"worker_id": "w", "extra": 1}}).encode(),
+        json.dumps({"v": 2, "type": "Pickle", "body": {}}).encode(),
+        json.dumps({"v": 2, "type": "Hello", "body": {"worker_id": "w", "extra": 1}}).encode(),
     ],
 )
 def test_bad_messages_are_rejected(raw):
@@ -125,7 +125,7 @@ def test_snapshot_round_trip(tmp_path):
 def test_welcome_carries_the_config_and_initial_digest(tmp_path):
     config = quadratic()
     reply = Coordinator(config, Journal(tmp_path)).handle(p.Hello("w"))
-    assert reply == p.Welcome(config.to_json(), initial_state(config).digest())
+    assert reply == p.Welcome(config.to_json(), initial_state(config).digest(), "w")
 
 
 def test_work_is_handed_out_once_then_again_after_the_deadline(tmp_path):
