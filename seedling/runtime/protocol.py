@@ -2,16 +2,18 @@
 
 Never pickle: a coordinator may be reachable from the internet, and unpickling untrusted
 bytes runs arbitrary code. Each message is a frozen dataclass; `encode`/`decode` add the
-type name and protocol version.
+type name and protocol version. `decode` also checks every field against its annotation
+(ints are not bools, floats are finite), so a handler never sees a malformed value.
 """
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, fields
 from typing import Any
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 _MESSAGES: dict[str, type[Message]] = {}
 
 
@@ -43,10 +45,36 @@ def decode(data: bytes) -> Message:
     cls = _MESSAGES.get(name)
     if cls is None:
         raise ProtocolError(f"unknown message type {name!r}")
-    allowed = {f.name for f in fields(cls)}  # type: ignore[arg-type]
-    if set(body) != allowed:
-        raise ProtocolError(f"{name}: fields {sorted(body)} != {sorted(allowed)}")
-    return cls(**body)
+    if not isinstance(body, dict):
+        raise ProtocolError(f"{name}: body is not an object")
+    kinds = {f.name: f.type for f in fields(cls)}  # type: ignore[arg-type]
+    if set(body) != set(kinds):
+        raise ProtocolError(f"{name}: fields {sorted(body)} != {sorted(kinds)}")
+    return cls(**{key: _checked(value, kinds[key], f"{name}.{key}") for key, value in body.items()})
+
+
+def _checked(value: Any, kind: str, where: str) -> Any:
+    """`value` as the annotated type `kind` (a string, see the dataclasses below), or raise."""
+    if kind.startswith("list[") and kind.endswith("]"):
+        if not isinstance(value, list):
+            raise ProtocolError(f"{where}: expected a list")
+        return [_checked(item, kind[5:-1], where) for item in value]
+    if kind == "dict[str, Any]":
+        ok = isinstance(value, dict)
+    elif kind == "str":
+        ok = isinstance(value, str)
+    elif kind == "bool":
+        ok = isinstance(value, bool)
+    elif kind == "int":
+        ok = isinstance(value, int) and not isinstance(value, bool)
+    elif kind == "float":
+        ok = isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+        value = float(value) if ok else value
+    else:
+        raise TypeError(f"{where}: no check for annotation {kind!r}")
+    if not ok:
+        raise ProtocolError(f"{where}: {value!r} is not a valid {kind}")
+    return value
 
 
 # ---------------------------------------------------------------- worker -> coordinator
@@ -84,6 +112,7 @@ class Submit(Message):
 class Welcome(Message):
     config: dict[str, Any]
     initial_digest: str
+    worker_id: str  # the id to use from now on; with audits on, issued by the coordinator
 
 
 @dataclass(frozen=True)
