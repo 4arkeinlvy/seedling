@@ -7,6 +7,7 @@ One step's life:  open (seeds = step_seeds(seed, step, pop))
 
 With an AuditPolicy (M8, see audit.py) some pairs need more than one opinion: they go out
 again to other workers, settle by vote, and outvoted workers are banned before the commit.
+With a referee (M10), the coordinator settles disputes by scoring the pair itself.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from seedling.exact.integer_es import integer_coefficients
 from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.runtime import protocol as p
+from seedling.runtime.access import Access
 from seedling.runtime.audit import AuditPolicy, Ledger, Opinion, agree, vote
 from seedling.runtime.config import RunConfig
 from seedling.runtime.journal import Journal
@@ -32,6 +34,7 @@ from seedling.runtime.workload import Workload, replay_workload
 
 Clock = Callable[[], float]
 WAIT_SECONDS = 0.05
+REFEREE = "referee"
 
 
 def build_workload(config: RunConfig, factory: Callable[..., Workload] = create_workload) -> Workload:
@@ -51,6 +54,7 @@ class Coordinator:
         workload_factory: Callable[..., Workload] = create_workload,
         audit: AuditPolicy = AuditPolicy(),
         rng: random.Random | None = None,
+        access: Access = Access(),
     ):
         self.config = config
         self.journal = journal
@@ -58,7 +62,17 @@ class Coordinator:
         self.audit = audit
         # Which pairs get audited must be secret, so this never derives from the run seed.
         self.rng = rng or random.Random(secrets.randbits(64))
-        self.ledger = Ledger.load(journal.dir / "audit.json") if audit.enabled else Ledger()
+        # Counters for /metrics (M10).
+        self.referee_scored = 0
+        self.opinions_total = 0
+        self.pairs_committed_total = 0
+        self.last_seen: dict[str, float] = {}
+        self.last_commit_at: float | None = None
+        self.step_seconds = 0.0
+        self.access = access
+        # Secure mode: ids are issued (and checked) by this coordinator, not chosen by workers.
+        self.secure = audit.enabled or access.required
+        self.ledger = Ledger.load(journal.dir / "audit.json") if self.secure else Ledger()
         self.workload = build_workload(config, workload_factory)
         self.initial = self.workload.initial_state(config.seed, config.frac_bits)
         self.initial_digest = self.initial.digest()
@@ -108,6 +122,10 @@ class Coordinator:
         self.audited: list[bool | None] = [None] * pop  # None: not drawn yet
         self.results: dict[int, tuple[float, float]] = {}  # settled pairs
         self.dropped: set[int] = set()  # no majority after max_opinions
+        self.verdicts: dict[int, Opinion] = {}  # the referee's own scores of disputed pairs
+        self.evidence: dict[tuple[int, str], str] = {}  # (pair, worker) -> its evidence, audited pairs only
+        self.graded: dict[tuple[int, str], tuple[float, float] | None] = {}  # the referee's grade of it
+        self.audit_assignments: set[tuple[int, str]] = set()  # handed out while the pair had an opinion
         self.order = self.rng.sample(range(pop), pop) if self.audit.enabled else list(range(pop))
 
     def _open(self, i: int) -> bool:
@@ -156,6 +174,10 @@ class Coordinator:
             self.audited[i] = self.rng.random() < chance
         if not self.audited[i]:
             self.results[i] = opinions[0].scores
+            self.evidence.pop((i, opinions[0].worker), None)  # nobody will check it
+            return
+        if i in self.verdicts or (self.audit.referee and len(opinions) >= 2):
+            self._settle_by_referee(i)
             return
         if len(opinions) < 2:
             return
@@ -169,16 +191,66 @@ class Coordinator:
             if not agree(self.audit, o, opinions[winner]):
                 self._ban(o.worker, f"outvoted on pair {i} of step {self.step}")
 
+    def _settle_by_referee(self, i: int) -> None:
+        """Agreement settles a pair; any disagreement goes to the referee, whose word is final."""
+        opinions = self.opinions[i]
+        if i not in self.verdicts and all(agree(self.audit, o, opinions[0]) for o in opinions):
+            self.results[i] = opinions[0].scores
+            return
+        if hasattr(self.workload, "check"):
+            self._settle_by_evidence(i)
+            return
+        if i not in self.verdicts:
+            self.verdicts[i] = self._scored_verdict(i)
+            self.referee_scored += 1
+        verdict = self.verdicts[i]
+        self.results[i] = verdict.scores
+        for o in opinions:
+            if not agree(self.audit, o, verdict):
+                self._ban(o.worker, f"contradicted by the referee on pair {i} of step {self.step}")
+
+    def _settle_by_evidence(self, i: int) -> None:
+        """For workloads that send evidence (generated text): judge each opinion by its OWN
+        evidence. Two honest workers may generate different text where the model nearly ties,
+        and both hold up; a liar's either fails the check or does not match its own scores."""
+        held = [o for o in self.opinions[i] if self._holds_up(i, o)]
+        if i not in self.verdicts:
+            graded = self.graded.get((i, held[0].worker)) if held else None
+            self.verdicts[i] = Opinion(REFEREE, *graded) if graded else self._scored_verdict(i)
+            self.referee_scored += 1
+        self.results[i] = self.verdicts[i].scores
+        for o in list(self.opinions[i]):
+            if o not in held:
+                self._ban(o.worker, f"its evidence does not hold up on pair {i} of step {self.step}")
+
+    def _holds_up(self, i: int, o: Opinion) -> bool:
+        """Does this opinion's evidence pass the check, and do its scores match the grade of it?"""
+        key = (i, o.worker)
+        if key not in self.graded:
+            claim = self.evidence.get(key, "")
+            seeds, sigma = [self.seeds[i]], self.config.sigma
+            self.graded[key] = self.workload.check(self.state, self.step, seeds, sigma, [claim])[0] if claim else None
+        graded = self.graded[key]
+        return graded is not None and agree(self.audit, o, Opinion(REFEREE, *graded))
+
+    def _scored_verdict(self, i: int) -> Opinion:
+        f_plus, f_minus = self.workload.score(self.state, self.step, [self.seeds[i]], self.config.sigma)
+        return Opinion(REFEREE, float(f_plus[0]), float(f_minus[0]))
+
     def _ban(self, worker: str, reason: str) -> None:
         """Ban `worker` and take back everything it said in the open step."""
         if worker in self.ledger.banned:
             return
         self.ledger.ban(worker, reason)
+        token = self.ledger.token_of.get(worker)
+        if token and token not in self.ledger.revoked:
+            self.ledger.revoke(token, f"{worker} {reason}")
         for i in range(self.config.pop):
             self.assigned[i].pop(worker, None)
             if all(o.worker != worker for o in self.opinions[i]):
                 continue
             self.opinions[i] = [o for o in self.opinions[i] if o.worker != worker]
+            self.evidence.pop((i, worker), None)
             self.results.pop(i, None)
             self.dropped.discard(i)
             if not self.opinions[i]:
@@ -193,6 +265,11 @@ class Coordinator:
                     self.ledger.passed[o.worker] = self.ledger.passed.get(o.worker, 0) + 1
             self.ledger.save()
         pairs = sorted(self.results)
+        now = self.clock()
+        if self.last_commit_at is not None:
+            self.step_seconds = now - self.last_commit_at
+        self.last_commit_at = now
+        self.pairs_committed_total += len(pairs)
         f_plus = np.array([self.results[i][0] for i in pairs])
         f_minus = np.array([self.results[i][1] for i in pairs])
         coefs = integer_coefficients(f_plus, f_minus, self.config.lr, self.config.sigma, self.config.frac_bits)
@@ -207,17 +284,33 @@ class Coordinator:
     # ---------------------------------------------------------------- handlers
 
     def _hello(self, message: p.Hello) -> p.Message:
-        worker = self.ledger.issue(message.worker_id) if self.audit.enabled else message.worker_id
+        if not self.secure:
+            return p.Welcome(self.config.to_json(), self.initial_digest, message.worker_id)
+        token = ""
+        if self.access.required:
+            token = self.access.name_of(message.token) or ""
+            if not token:
+                return p.Error("invalid join token")
+            if token in self.ledger.revoked:
+                return p.Error(f"token revoked: {self.ledger.revoked[token]}")
+            if self.ledger.ids_of(token) >= self.access.max_ids_per_token:
+                return p.Error(f"token {token} already has {self.access.max_ids_per_token} worker ids")
+        if len(self.ledger.names) >= self.access.max_ids:
+            return p.Error("this run has issued all the worker ids it allows")
+        worker = self.ledger.issue(message.worker_id, token)
         return p.Welcome(self.config.to_json(), self.initial_digest, worker)
 
     def _refuse(self, worker: str) -> p.Error | None:
-        """With audits on, only ids this coordinator issued and has not banned may work."""
-        if not self.audit.enabled:
+        """In secure mode, only ids this coordinator issued, not banned or revoked, may work."""
+        if not self.secure:
             return None
         if worker in self.ledger.banned:
             return p.Error(f"banned: {self.ledger.banned[worker]}")
         if not self.ledger.known(worker):
             return p.Error("unknown worker id: send Hello first")
+        token = self.ledger.token_of.get(worker)
+        if token in self.ledger.revoked:
+            return p.Error(f"token revoked: {self.ledger.revoked[token]}")
         return None
 
     def _sync(self, message: p.Sync) -> p.Message:
@@ -232,6 +325,7 @@ class Coordinator:
     def _get_work(self, message: p.GetWork) -> p.Message:
         if refused := self._refuse(message.worker_id):
             return refused
+        self.last_seen[message.worker_id] = self.clock()
         if self.finished:
             return p.Finished(self.step, self.state.digest())
         now = self.clock()
@@ -240,7 +334,11 @@ class Coordinator:
             return p.Wait(WAIT_SECONDS)
         for i in pairs:
             self.assigned[i][message.worker_id] = now
-        return p.Work(self.step, pairs)
+            if self.opinions[i]:
+                self.audit_assignments.add((i, message.worker_id))
+        # An audit carries the first scorer's evidence, so the auditor can check instead of redo.
+        claims = [self.evidence.get((i, self.opinions[i][0].worker), "") if self.opinions[i] else "" for i in pairs]
+        return p.Work(self.step, pairs, claims if any(claims) else [])
 
     def _submit(self, message: p.Submit) -> p.Message:
         if refused := self._refuse(message.worker_id):
@@ -252,16 +350,48 @@ class Coordinator:
         pairs = message.pairs
         if not (len(pairs) == len(message.f_plus) == len(message.f_minus)) or len(set(pairs)) != len(pairs):
             return p.Ack(False, "malformed")
+        if message.evidence and len(message.evidence) != len(pairs):
+            return p.Ack(False, "malformed")
         if not all(0 <= i < self.config.pop for i in pairs):
             return p.Ack(False, "malformed")
         worker = message.worker_id
-        for i, fp, fm in zip(pairs, message.f_plus, message.f_minus, strict=True):
+        for k, (i, fp, fm) in enumerate(zip(pairs, message.f_plus, message.f_minus, strict=True)):
             if not self._open(i) or any(o.worker == worker for o in self.opinions[i]):
                 continue
             if self.audit.enabled and worker not in self.assigned[i]:
                 continue  # unsolicited: otherwise a colluder could pre-empt an audit
+            if self.opinions[i] and not self.audit.median and (i, worker) not in self.audit_assignments:
+                continue  # a late answer to a fresh assignment (it expired and went out again): not an audit
             self.opinions[i].append(Opinion(worker, fp, fm))
+            self.opinions_total += 1
+            if message.evidence and message.evidence[k]:
+                self.evidence[(i, worker)] = message.evidence[k]
             self._settle(i)
         if len(self.results) + len(self.dropped) == self.config.pop:
             self._commit()
         return p.Ack(True)
+
+    # ---------------------------------------------------------------- metrics
+
+    def metrics_text(self, active_window: float = 60.0) -> str:
+        """The run's health in the Prometheus text format (served at GET /metrics)."""
+        now = self.clock()
+        active = sum(now - seen <= active_window for seen in list(self.last_seen.values()))
+        work = self.opinions_total / max(self.pairs_committed_total, 1)
+        values = [
+            ("seedling_step", "gauge", "Steps committed so far.", self.step),
+            ("seedling_steps_target", "gauge", "Steps the run is configured for.", self.config.steps),
+            ("seedling_finished", "gauge", "1 once the run is over.", int(self.finished)),
+            ("seedling_workers_active", "gauge", f"Workers seen in the last {active_window:g}s.", active),
+            ("seedling_workers_banned", "gauge", "Worker ids banned for lying.", len(self.ledger.banned)),
+            ("seedling_tokens_revoked", "gauge", "Join tokens revoked for lying.", len(self.ledger.revoked)),
+            ("seedling_opinions_total", "counter", "Pair scores received (audits included).", self.opinions_total),
+            ("seedling_pairs_committed_total", "counter", "Pairs that went into a step.", self.pairs_committed_total),
+            ("seedling_referee_scored_total", "counter", "Disputed pairs the referee scored.", self.referee_scored),
+            ("seedling_work_per_pair", "gauge", "Scores received per committed pair (1 = no audit cost).", work),
+            ("seedling_step_seconds", "gauge", "Duration of the last step.", self.step_seconds),
+        ]
+        lines = []
+        for name, kind, help_text, value in values:
+            lines += [f"# HELP {name} {help_text}", f"# TYPE {name} {kind}", f"{name} {value:g}"]
+        return "\n".join(lines) + "\n"

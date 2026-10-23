@@ -2,7 +2,8 @@
 
     python -m bench.gpu.dishonest_worker --connect tcp://127.0.0.1:7070 --behaviour flip
 
-    flip     does the work, then swaps F+ and F- (pushes the model the wrong way)
+    flip     does the work, then swaps F+ and F- (pushes the model the wrong way); any
+             evidence it sends is the true text, so only its scores lie
     lazy     skips the work and sends zeros (a free rider)
     inflate  skips the work and claims F+ = 1e9, F- = -1e9
 """
@@ -32,8 +33,11 @@ class LyingWorker(Worker):
         n = len(work.pairs)
         if self.behaviour == "flip":
             honest = super()._score(work)
-            f_plus, f_minus = honest.f_minus, honest.f_plus
-        elif self.behaviour == "lazy":
+            return p.Submit(
+                self.worker_id, work.step, list(work.pairs), honest.f_minus, honest.f_plus, honest.digest,
+                honest.evidence,
+            )  # fmt: skip
+        if self.behaviour == "lazy":
             f_plus, f_minus = [0.0] * n, [0.0] * n
         else:
             f_plus, f_minus = [1e9] * n, [-1e9] * n

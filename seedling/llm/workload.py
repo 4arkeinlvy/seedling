@@ -19,7 +19,7 @@ import torch
 import torch.nn as nn
 
 from seedling.exact.state import FixedPointState
-from seedling.llm import countdown
+from seedling.llm import countdown, evidence
 from seedling.llm.base import DEFAULT_MODULES, LowRankLLMWorkload, linear_shapes
 from seedling.llm.codec import ChatCodec, HFChatCodec
 
@@ -48,6 +48,7 @@ class CountdownWorkload(LowRankLLMWorkload):
         codec: ChatCodec | None = None,
         protocol: str = "seedling",
         problems: Sequence[countdown.Problem] | None = None,
+        verify_tolerance: float = 0.5,
     ):
         if protocol not in ("seedling", "tinyzero"):
             raise ValueError("protocol is 'seedling' or 'tinyzero'")
@@ -59,6 +60,8 @@ class CountdownWorkload(LowRankLLMWorkload):
         self.max_rows = max_rows
         self.protocol = protocol
         self._problems = list(problems) if problems is not None else None
+        self.verify_tolerance = verify_tolerance
+        self.verified = self.regenerated = 0  # audits settled by a check vs by generating again
 
     # ---------------------------------------------------------------- protocol
 
@@ -94,20 +97,102 @@ class CountdownWorkload(LowRankLLMWorkload):
     def score(
         self, state: FixedPointState, step: int, seeds: Sequence[int], sigma: float
     ) -> tuple[np.ndarray, np.ndarray]:
+        f_plus, f_minus, _ = self.score_with_evidence(state, step, seeds, sigma)
+        return f_plus, f_minus
+
+    def score_with_evidence(
+        self, state: FixedPointState, step: int, seeds: Sequence[int], sigma: float
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        """Scores, and per seed the generated tokens of its 2 x prompts rows (see evidence.py)."""
         problems = self.step_problems(step)
         prompts = [self.prompt(p) for p in problems]
         net = self.perturbable()
         net.load(state)
         repeat = len(problems)
         per_chunk = max(1, self.max_rows // (2 * repeat))
-        rewards = []
+        rewards, packs = [], []
         for start in range(0, len(seeds), per_chunk):
             chunk = seeds[start : start + per_chunk]
             with net.population(chunk, sigma, repeat):
-                texts = self._generate(prompts * (2 * len(chunk)))
-            rewards += [self.reward(t, problems[i % repeat]) for i, t in enumerate(texts)]
+                completions = self._generate_ids(prompts * (2 * len(chunk)))
+            rewards += self._grade(completions, problems)
+            packs += [evidence.pack(rows) for rows in np.split(completions, len(chunk))]
         per_member = np.array(rewards).reshape(2 * len(seeds), repeat).mean(axis=1)
-        return per_member[0::2], per_member[1::2]
+        return per_member[0::2], per_member[1::2], packs
+
+    def check(
+        self, state: FixedPointState, step: int, seeds: Sequence[int], sigma: float, claims: Sequence[str]
+    ) -> list[tuple[float, float] | None]:
+        """Per seed: the scores of the claimed tokens if one teacher-forced pass confirms them,
+        else None. Grading the same tokens gives the same scores on any machine."""
+        problems = self.step_problems(step)
+        prompts = [self.prompt(p) for p in problems] * 2
+        self.perturbable().load(state)
+        out: list[tuple[float, float] | None] = []
+        for seed, claim in zip(seeds, claims, strict=True):
+            rewards = self._check(prompts, problems, seed, sigma, claim)
+            if rewards is None:
+                out.append(None)
+            else:
+                plus, minus = np.array(rewards).reshape(2, len(problems)).mean(axis=1)
+                out.append((float(plus), float(minus)))
+        return out
+
+    def verify(
+        self, state: FixedPointState, step: int, seeds: Sequence[int], sigma: float, claims: Sequence[str]
+    ) -> tuple[np.ndarray, np.ndarray, list[str]]:
+        """An auditor's scores: those of the claimed tokens if they check out (the claim is then
+        its evidence too), else its own, from generating again (with its own evidence)."""
+        f_plus, f_minus, packs = np.zeros(len(seeds)), np.zeros(len(seeds)), list(claims)
+        for k, checked in enumerate(self.check(state, step, seeds, sigma, claims)):
+            if checked is None:
+                self.regenerated += 1
+                fp, fm, (packs[k],) = self.score_with_evidence(state, step, [seeds[k]], sigma)
+                f_plus[k], f_minus[k] = fp[0], fm[0]
+            else:
+                self.verified += 1
+                f_plus[k], f_minus[k] = checked
+        return f_plus, f_minus, packs
+
+    def _check(
+        self, prompts: list[str], problems: list[countdown.Problem], seed: int, sigma: float, claim: str
+    ) -> list[float] | None:
+        """Rewards of the claimed completions of one seed, or None if they do not hold up."""
+        try:
+            claimed = evidence.unpack(claim)
+        except ValueError:
+            return None
+        rows, length = claimed.shape
+        if rows != len(prompts) or not 0 < length <= self.max_new_tokens:
+            return None
+        tokens, valid = evidence.canonical(claimed, self._eos(), self.codec().pad_token_id)
+        unfinished = ~np.isin(tokens, self._eos()).any(axis=1)
+        if unfinished.any() and length != self.max_new_tokens:
+            return None  # a row that never stopped must have used every token: no cutting text short
+        net = self.perturbable()
+        prompt_ids, prompt_mask = self.codec().encode(prompts)
+        ids = torch.cat([prompt_ids, torch.from_numpy(tokens).long()], dim=1)
+        mask = torch.cat([prompt_mask, torch.from_numpy(valid).long()], dim=1)
+        width = prompt_ids.shape[1]
+        with net.population([seed], sigma, len(problems)):
+            logits = self.forward_logits(ids, mask, keep=length + 1)[:, :length]  # predictions of the claimed tokens
+        ok = evidence.greedy_rows(
+            logits, torch.from_numpy(tokens).to(logits.device), torch.from_numpy(valid).to(logits.device),
+            self.verify_tolerance,
+        )  # fmt: skip
+        if not bool(ok.all()):
+            return None
+        return self._grade(tokens, problems)
+
+    def _eos(self) -> list[int]:
+        eos = self.perturbable().model.generation_config.eos_token_id
+        return [] if eos is None else [eos] if isinstance(eos, int) else list(eos)
+
+    def _grade(self, completions: np.ndarray, problems: list[countdown.Problem]) -> list[float]:
+        """Rewards of completion rows (row r answers problem r mod len(problems))."""
+        tokens, _ = evidence.canonical(completions, self._eos(), self.codec().pad_token_id)
+        texts = self.codec().decode(torch.from_numpy(tokens))
+        return [self.reward(t, problems[i % len(problems)]) for i, t in enumerate(texts)]
 
     def evaluate(self, state: FixedPointState, step: int) -> dict[str, float]:
         problems = self.held_out_problems()
@@ -123,8 +208,12 @@ class CountdownWorkload(LowRankLLMWorkload):
             "well_formed": float(np.mean(rewards_arr > 0)),
         }
 
-    @torch.no_grad()
     def _generate(self, prompts: list[str]) -> list[str]:
+        return self.codec().decode(torch.from_numpy(self._generate_ids(prompts)))
+
+    @torch.no_grad()
+    def _generate_ids(self, prompts: list[str]) -> np.ndarray:
+        """Greedy completions (rows, new tokens), padded after each row's end."""
         codec = self.codec()
         net = self.perturbable()
         input_ids, attention_mask = codec.encode(prompts)
@@ -138,4 +227,4 @@ class CountdownWorkload(LowRankLLMWorkload):
             top_k=None,
             pad_token_id=codec.pad_token_id,
         )
-        return codec.decode(output[:, input_ids.shape[1] :])
+        return output[:, input_ids.shape[1] :].cpu().numpy().astype(np.int32)

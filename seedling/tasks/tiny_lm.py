@@ -62,6 +62,20 @@ class TinyLMWorkload:
     def trainable_parameters(self) -> int:
         return sum(s.size for s in self.specs)
 
+    def export(self, state: FixedPointState, out: str) -> None:
+        """model.safetensors (the TinyGPT's weights) and vocab.json (its characters)."""
+        import json
+        from pathlib import Path
+
+        from safetensors.torch import save_file
+
+        self.net.load(state)
+        model = self.net.unwrap()
+        Path(out).mkdir(parents=True, exist_ok=True)
+        save_file({k: v.contiguous() for k, v in model.state_dict().items()}, str(Path(out) / "model.safetensors"))
+        (Path(out) / "vocab.json").write_text(json.dumps(self.tokenizer.chars))
+        self.net = PerturbableModel(model, self.specs)
+
     def initial_state(self, seed: int, frac_bits: int) -> FixedPointState:
         return FixedPointState(np.zeros(self.trainable_parameters, dtype=np.int32), frac_bits)
 

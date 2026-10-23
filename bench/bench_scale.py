@@ -7,6 +7,8 @@ Each run uses one defense:
     median3  every pair scored by 3 workers, coordinate-wise median (CyBeR-0-style
              robust aggregation, Egger et al. 2025): 3x work, no bans
     spot     spot checks at 10%, probation 10, vote and ban (M8): about 1.1x work
+    referee  the same, with disputes settled by the coordinator scoring the pair itself
+             (M10, after Verde's refereed delegation)
 
 Attacks: flip (swap F+ and F-), lazy (zeros, no work), sleeper (honest through probation,
 then flip). Each finished run is appended to bench/results/scale_<benchmark>.jsonl (runs
@@ -39,6 +41,7 @@ DEFENSES = {
     "none": {},
     "median3": {"aggregate": "median", "replicas": 3},
     "spot": {"rate": 0.1, "probation": 10},
+    "referee": {"rate": 0.1, "probation": 10, "referee": "self"},
 }
 PROBATION = 10
 
@@ -99,10 +102,10 @@ def run_one(job: dict) -> dict:
     }
 
 
-def jobs(names: list[str], steps: int, seeds: int) -> list[dict]:
+def jobs(names: list[str], steps: int, seeds: int, defenses=tuple(DEFENSES), attacks=("honest", *ATTACKS)) -> list[dict]:
     return [
         dict(bench=b, defense=d, attack=a, seed=s, steps=steps)
-        for b, s, d, a in itertools.product(names, range(seeds), DEFENSES, ("honest", *ATTACKS))
+        for b, s, d, a in itertools.product(names, range(seeds), defenses, attacks)
     ]
 
 
@@ -155,12 +158,16 @@ def main() -> None:
     parser.add_argument("--procs", type=int, default=4)
     parser.add_argument("--threads", type=int, default=1, help="torch threads per process")
     parser.add_argument("--report", action="store_true", help="print tables from saved runs, run nothing")
+    parser.add_argument("--defenses", nargs="+", default=list(DEFENSES), choices=list(DEFENSES))
+    parser.add_argument("--attacks", nargs="+", default=["honest", *ATTACKS], choices=["honest", *ATTACKS])
     ns = parser.parse_args()
     RESULTS.mkdir(parents=True, exist_ok=True)
     done = {bench: load(bench) for bench in ns.bench}
     key = lambda r: (r["bench"], r["defense"], r["attack"], r["seed"], r["steps"])  # noqa: E731
     seen = {key(r) for rows in done.values() for r in rows}
-    todo = [] if ns.report else [j for j in jobs(ns.bench, ns.steps, ns.seeds) if key(j) not in seen]
+    todo = [] if ns.report else [
+        j for j in jobs(ns.bench, ns.steps, ns.seeds, ns.defenses, ns.attacks) if key(j) not in seen
+    ]
     os.environ.setdefault("OMP_NUM_THREADS", str(ns.threads))
     with multiprocessing.get_context("spawn").Pool(ns.procs, initializer=_init, initargs=(ns.threads,)) as pool:
         for k, row in enumerate(pool.imap_unordered(run_one, todo), 1):

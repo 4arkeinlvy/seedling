@@ -104,6 +104,16 @@ class LowRankLLMWorkload:
     def trainable_parameters(self) -> int:
         return sum(s.size for s in self.specs)
 
+    def export(self, state: FixedPointState, out: str) -> None:
+        """A standard Hugging Face folder (safetensors) holding the trained weights."""
+        net = self.perturbable()
+        net.load(state)
+        model = net.unwrap()
+        self._perturbable = None
+        model.save_pretrained(out, safe_serialization=True)
+        if self._model is None:  # a hub model: ship its tokenizer too
+            self.tokenizer().save_pretrained(out)
+
     # ---------------------------------------------------------------- Workload interface (shared part)
 
     def initial_state(self, seed: int, frac_bits: int) -> FixedPointState:
@@ -115,10 +125,14 @@ class LowRankLLMWorkload:
     # ---------------------------------------------------------------- shared measurements
 
     @torch.no_grad()
-    def forward_logits(self, input_ids: torch.Tensor, attention_mask: torch.Tensor) -> torch.Tensor:
+    def forward_logits(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, keep: int = 0) -> torch.Tensor:
+        """Logits of every position, or of the last `keep` only (the vocabulary projection is
+        the costly part of a long forward pass)."""
         net = self.perturbable()
         input_ids, attention_mask = input_ids.to(net.device), attention_mask.to(net.device)
-        out = net.model(input_ids=input_ids, attention_mask=attention_mask, position_ids=positions(attention_mask))
+        out = net.model(
+            input_ids=input_ids, attention_mask=attention_mask, position_ids=positions(attention_mask), logits_to_keep=keep
+        )
         return out.logits.float()
 
     @torch.no_grad()

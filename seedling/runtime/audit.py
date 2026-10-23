@@ -22,6 +22,11 @@ This assumes the workers auditing a pair are mostly honest. Colluding workers wh
 audit each other can still pass a lie; centered ranks then bound what it can do to the
 update, whatever the lie is (`influence_bound`).
 
+referee="self" (M10, after Verde's refereed delegation, Arun et al. 2025): on any disagreement
+the coordinator scores the pair itself and its verdict is final, so one honest worker is
+enough and nobody can be outvoted into a ban. It needs a coordinator that can run the
+workload (any CPU task; an LLM only on a coordinator with the model).
+
 aggregate="median" is the baseline from robust aggregation (as in CyBeR-0, Egger et al. 2025):
 every pair is scored by `replicas` different workers and the coordinate-wise median counts.
 Nobody is banned; a lie passes only when most of a pair's scorers tell it. It costs
@@ -48,6 +53,7 @@ class AuditPolicy:
     max_opinions: int = 5
     aggregate: str = "vote"  # "vote": spot checks and bans; "median": replicate every pair
     replicas: int = 3
+    referee: str = ""  # "": majority vote settles disputes; "self": the coordinator does
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.rate <= 1.0:
@@ -56,6 +62,8 @@ class AuditPolicy:
             raise ValueError("probation >= 0 and max_opinions >= 3 (a tie needs a third opinion)")
         if self.aggregate not in ("vote", "median") or self.replicas < 1:
             raise ValueError("aggregate is 'vote' or 'median', and replicas >= 1")
+        if self.referee not in ("", "self"):
+            raise ValueError("referee is '' or 'self'")
 
     @property
     def enabled(self) -> bool:
@@ -122,26 +130,42 @@ class Ledger:
     names: dict[str, str] = field(default_factory=dict)
     passed: dict[str, int] = field(default_factory=dict)
     banned: dict[str, str] = field(default_factory=dict)
+    token_of: dict[str, str] = field(default_factory=dict)  # worker id -> join token name (M10)
+    revoked: dict[str, str] = field(default_factory=dict)  # token name -> why
 
     @classmethod
     def load(cls, path: Path) -> Ledger:
         if not path.exists():
             return cls(path)
         data = json.loads(path.read_text())
-        return cls(path, data["names"], data["passed"], data["banned"])
+        return cls(
+            path, data["names"], data["passed"], data["banned"], data.get("token_of", {}), data.get("revoked", {})
+        )
 
     def save(self) -> None:
         if self.path is not None:
-            data = {"names": self.names, "passed": self.passed, "banned": self.banned}
+            data = {
+                "names": self.names, "passed": self.passed, "banned": self.banned,
+                "token_of": self.token_of, "revoked": self.revoked,
+            }  # fmt: skip
             atomic_write(self.path, json.dumps(data, indent=1, sort_keys=True).encode())
 
-    def issue(self, name: str) -> str:
+    def issue(self, name: str, token: str = "") -> str:
         """A fresh, unguessable id: nobody can submit (or be framed) under another's id."""
         worker = f"{name}~{secrets.token_hex(8)}"
         self.names[worker] = name
         self.passed[worker] = 0
+        if token:
+            self.token_of[worker] = token
         self.save()
         return worker
+
+    def ids_of(self, token: str) -> int:
+        return sum(t == token for t in self.token_of.values())
+
+    def revoke(self, token: str, reason: str) -> None:
+        self.revoked[token] = reason
+        self.save()
 
     def known(self, worker: str) -> bool:
         return worker in self.names
