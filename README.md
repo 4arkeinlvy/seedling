@@ -261,7 +261,7 @@ seedling/
                  TinyZero protocol of Qiu et al.), SST-2 by label-word likelihood (MeZO),
                  evidence: checking generated tokens with one forward pass (evidence.py)
   cli.py         seedling train | coordinator | worker | replay | export
-tests/           the spec: 309 Python tests (heavy = multi-process, llm = GPU) + 5 C test programs
+tests/           the spec: 313 Python tests (heavy = multi-process, llm = GPU) + 5 C test programs
 bench/           all-reduce bandwidth, DDP step time, ES curves, dishonest workers (bench_scale:
                  defenses x attacks x workloads), honest score agreement, gpu/ kit for user runs
 assets/          the rendered explainer (GIF for the README, mp4), the dishonest-workers figure
