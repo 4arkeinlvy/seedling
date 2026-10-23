@@ -306,3 +306,37 @@ def test_the_lying_worker_is_caught_by_a_real_coordinator(tmp_path):
         t.join(timeout=120)
     server.shutdown()
     assert coordinator.finished and "banned" in str(outcome["lazy"])
+
+
+# ------------------------------------------------------------------ TinyLM: a GPT trained by low-rank ES alone
+
+
+def _tinylm(**overrides):
+    from seedling.tasks.tiny_lm import TinyLMWorkload
+
+    args = {"n_layer": 1, "n_embd": 32, "n_head": 2, "block_size": 16, "batch": 2}
+    args.update(overrides)
+    return TinyLMWorkload(**args)
+
+
+def test_tinylm_trains_every_linear_layer_and_scores_independently_of_batching():
+    import numpy as np
+
+    w = _tinylm()
+    assert {s.name for s in w.specs} >= {"blocks.0.attn.qkv", "blocks.0.mlp.fc", "lm_head"}
+    state = w.initial_state(0, 24)
+    f_plus, f_minus = w.score(state, 3, [5, 6, 7], 0.01)
+    one_by_one = _tinylm(max_rows=4)  # 2 rows x 2 signs: one member per forward pass
+    sub_plus, sub_minus = one_by_one.score(state, 3, [6], 0.01)
+    assert np.array_equal(sub_plus, f_plus[1:2]) and np.array_equal(sub_minus, f_minus[1:2])
+    assert np.all(f_plus < 0), "fitness is minus the cross-entropy"
+
+
+def test_tinylm_runs_replay_bit_for_bit():
+    from seedling.runtime.local import train_local
+    from seedling.runtime.workload import replay_workload
+
+    config = RunConfig(task="tinylm", steps=2, pop=3, sigma=0.01, lr=0.002, frac_bits=24)
+    run = train_local(_tinylm(), config, eval_every=2)
+    assert "val_loss" in run.history[-1]
+    assert replay_workload(_tinylm(), run.initial, run.records).digest() == run.state.digest()

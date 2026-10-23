@@ -134,14 +134,15 @@ def markdown(table: list[dict], bench: str) -> str:
     lines = [
         f"**{info['label']}** ({'higher' if info['higher'] else 'lower'} is better)",
         "",
-        "| attack (30%) | defense | metric | lies committed | liars banned | honest banned | work | = honest run |",
+        "| attack (30%) | defense | metric: mean (min–max over seeds) | lies committed | liars banned | honest banned | work | = honest run |",
         "|---|---|---|---|---|---|---|---|",
     ]
     for t in table:
         if t["bench"] != bench:
             continue
+        spread = f" ({t['min']:.4g}–{t['max']:.4g})" if t["runs"] > 1 and t["min"] != t["max"] else ""
         lines.append(
-            f"| {t['attack']} | {t['defense']} | {t['metric']:.4g} | {t['lies']:.0f} | {t['liars_banned']} "
+            f"| {t['attack']} | {t['defense']} | {t['metric']:.4g}{spread} | {t['lies']:.0f} | {t['liars_banned']} "
             f"| {t['honest_banned']} | {t['cost']:.2f}x | {t['bit_identical']}/{t['runs']} |"
         )
     return "\n".join(lines)
