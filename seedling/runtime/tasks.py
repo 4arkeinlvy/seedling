@@ -46,6 +46,34 @@ def _mnist(**args: Any) -> Workload:
     return VectorWorkload(MnistTask(**args))
 
 
+@register("halfcheetah")
+def _halfcheetah(**args: Any) -> Workload:
+    from seedling.tasks.mujoco import LocomotionTask
+
+    return VectorWorkload(LocomotionTask("halfcheetah", **args))
+
+
+@register("hopper")
+def _hopper(**args: Any) -> Workload:
+    from seedling.tasks.mujoco import LocomotionTask
+
+    return VectorWorkload(LocomotionTask("hopper", **args))
+
+
+@register("tinylm")
+def _tinylm(**args: Any) -> Workload:
+    from seedling.tasks.tiny_lm import TinyLMWorkload
+
+    return TinyLMWorkload(**args)
+
+
+@register("sst2")
+def _sst2(**args: Any) -> Workload:
+    from seedling.llm.classify import Sst2Workload
+
+    return Sst2Workload(**args)
+
+
 @register("countdown")
 def _countdown(**args: Any) -> Workload:
     from seedling.llm.workload import CountdownWorkload

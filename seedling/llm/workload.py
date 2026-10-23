@@ -1,42 +1,35 @@
-"""Countdown with a real LLM, as a runtime Workload.
+"""Countdown with a real LLM, as a runtime Workload: generate an answer, grade it.
 
 The coordinator only needs layer shapes (read from the model's config, no weights), so it
 can run without a GPU. Workers load the model lazily the first time they score.
+
+Two protocols:
+    seedling   generated 3-number problems, partial credit for close answers (M6)
+    tinyzero   the TinyZero dataset, prompt and score used by Qiu et al. (2025), so that
+               accuracies compare with theirs; the last `eval_problems` are held out
 """
 
 from __future__ import annotations
 
+import random
 from collections.abc import Sequence
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from seedling.exact.record import StepRecord
 from seedling.exact.state import FixedPointState
 from seedling.llm import countdown
+from seedling.llm.base import DEFAULT_MODULES, LowRankLLMWorkload, linear_shapes
 from seedling.llm.codec import ChatCodec, HFChatCodec
-from seedling.llm.lowrank import LayerSpec, PerturbableModel, apply_lowrank, plan_layers
 
 DEFAULT_MODEL = "Qwen/Qwen2.5-0.5B-Instruct"
-DEFAULT_MODULES = ("self_attn.o_proj", "mlp.down_proj")
 EVAL_SEED = 10**9
 
-
-def linear_shapes(model: nn.Module, last_layers: int, modules: Sequence[str]) -> list[tuple[str, int, int]]:
-    """(name, out, in) of the chosen Linear modules in the last `last_layers` decoder layers."""
-    blocks = model.get_submodule("model.layers")
-    first = len(blocks) - last_layers
-    shapes = []
-    for i in range(first, len(blocks)):
-        for module in modules:
-            name = f"model.layers.{i}.{module}"
-            weight = model.get_submodule(name).weight
-            shapes.append((name, weight.shape[0], weight.shape[1]))
-    return shapes
+__all__ = ["DEFAULT_MODEL", "CountdownWorkload", "linear_shapes"]
 
 
-class CountdownWorkload:
+class CountdownWorkload(LowRankLLMWorkload):
     name = "countdown"
 
     def __init__(
@@ -50,65 +43,59 @@ class CountdownWorkload:
         eval_batch: int = 32,
         max_rows: int = 128,
         device: str | None = None,
+        dtype: str = "bfloat16",
         model: nn.Module | None = None,
         codec: ChatCodec | None = None,
+        protocol: str = "seedling",
+        problems: Sequence[countdown.Problem] | None = None,
     ):
-        self.model_name = model_name
-        self.last_layers = last_layers
-        self.modules = tuple(modules)
+        if protocol not in ("seedling", "tinyzero"):
+            raise ValueError("protocol is 'seedling' or 'tinyzero'")
+        super().__init__(model_name, last_layers, modules, device, dtype, model, codec)
         self.prompts_per_step = prompts_per_step
         self.max_new_tokens = max_new_tokens
         self.eval_problems = eval_problems
         self.eval_batch = eval_batch
         self.max_rows = max_rows
-        self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-        self._model = model
-        self._codec = codec
-        self._perturbable: PerturbableModel | None = None
-        self.specs: list[LayerSpec] = plan_layers(linear_shapes(self._skeleton(), last_layers, self.modules))
+        self.protocol = protocol
+        self._problems = list(problems) if problems is not None else None
 
-    # ---------------------------------------------------------------- model loading
-
-    def _skeleton(self) -> nn.Module:
-        """The model's structure without weights (meta device): enough for shapes."""
-        if self._model is not None:
-            return self._model
-        from transformers import AutoConfig, AutoModelForCausalLM
-
-        with torch.device("meta"):
-            return AutoModelForCausalLM.from_config(AutoConfig.from_pretrained(self.model_name))
-
-    def perturbable(self) -> PerturbableModel:
-        if self._perturbable is None:
-            model = self._model
-            if model is None:
-                from transformers import AutoModelForCausalLM
-
-                model = AutoModelForCausalLM.from_pretrained(self.model_name, dtype=torch.bfloat16)
-            model = model.to(self.device).eval()
-            self._perturbable = PerturbableModel(model, self.specs)
-        return self._perturbable
+    # ---------------------------------------------------------------- protocol
 
     def codec(self) -> ChatCodec:
-        if self._codec is None:
-            from transformers import AutoTokenizer
+        if self._codec is None and self.protocol == "tinyzero":
+            self._codec = HFChatCodec(self.tokenizer(), system=countdown.TINYZERO_SYSTEM, prefix=countdown.TINYZERO_PREFIX)
+        return super().codec()
 
-            self._codec = HFChatCodec(AutoTokenizer.from_pretrained(self.model_name))
-        return self._codec
+    def dataset(self) -> list[countdown.Problem]:
+        if self._problems is None:
+            self._problems = countdown.load_tinyzero()
+        return self._problems
+
+    def step_problems(self, step: int) -> list[countdown.Problem]:
+        if self.protocol == "seedling":
+            return countdown.generate(self.prompts_per_step, seed=step)
+        pool = len(self.dataset()) - self.eval_problems
+        return [self.dataset()[i] for i in random.Random(step).sample(range(pool), self.prompts_per_step)]
+
+    def held_out_problems(self) -> list[countdown.Problem]:
+        if self.protocol == "seedling":
+            return countdown.generate(self.eval_problems, seed=EVAL_SEED)
+        return self.dataset()[-self.eval_problems :]
+
+    def prompt(self, problem: countdown.Problem) -> str:
+        return problem.prompt() if self.protocol == "seedling" else countdown.tinyzero_prompt(problem)
+
+    def reward(self, text: str, problem: countdown.Problem) -> float:
+        return countdown.reward(text, problem) if self.protocol == "seedling" else countdown.tinyzero_reward(text, problem)
 
     # ---------------------------------------------------------------- Workload interface
-
-    def initial_state(self, seed: int, frac_bits: int) -> FixedPointState:
-        return FixedPointState(np.zeros(sum(s.size for s in self.specs), dtype=np.int32), frac_bits)
-
-    def apply(self, state: FixedPointState, record: StepRecord) -> None:
-        apply_lowrank(state, record, self.specs)
 
     def score(
         self, state: FixedPointState, step: int, seeds: Sequence[int], sigma: float
     ) -> tuple[np.ndarray, np.ndarray]:
-        problems = countdown.generate(self.prompts_per_step, seed=step)
-        prompts = [p.prompt() for p in problems]
+        problems = self.step_problems(step)
+        prompts = [self.prompt(p) for p in problems]
         net = self.perturbable()
         net.load(state)
         repeat = len(problems)
@@ -118,18 +105,18 @@ class CountdownWorkload:
             chunk = seeds[start : start + per_chunk]
             with net.population(chunk, sigma, repeat):
                 texts = self._generate(prompts * (2 * len(chunk)))
-            rewards += [countdown.reward(t, problems[i % repeat]) for i, t in enumerate(texts)]
+            rewards += [self.reward(t, problems[i % repeat]) for i, t in enumerate(texts)]
         per_member = np.array(rewards).reshape(2 * len(seeds), repeat).mean(axis=1)
         return per_member[0::2], per_member[1::2]
 
     def evaluate(self, state: FixedPointState, step: int) -> dict[str, float]:
-        problems = countdown.generate(self.eval_problems, seed=EVAL_SEED)
+        problems = self.held_out_problems()
         self.perturbable().load(state)
         rewards = []
         for start in range(0, len(problems), self.eval_batch):
             chunk = problems[start : start + self.eval_batch]
-            texts = self._generate([p.prompt() for p in chunk])
-            rewards += [countdown.reward(t, p) for t, p in zip(texts, chunk, strict=True)]
+            texts = self._generate([self.prompt(p) for p in chunk])
+            rewards += [self.reward(t, p) for t, p in zip(texts, chunk, strict=True)]
         rewards_arr = np.array(rewards)
         return {
             "accuracy": float(np.mean(rewards_arr == countdown.CORRECT)),

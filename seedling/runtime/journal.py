@@ -50,14 +50,16 @@ class Journal:
         self.snapshot_path = self.dir / "snapshot.npz"
 
     def open(self, config: RunConfig, initial_digest: str) -> None:
-        """Create the run, or check that an existing run directory belongs to this run."""
+        """Create the run, or check that an existing run directory belongs to this run.
+
+        Only the step count may differ: a run can be extended (or cut short) later."""
         header = {"config": config.to_json(), "initial_digest": initial_digest}
         if self.header_path.exists():
             existing = json.loads(self.header_path.read_text())
+            existing["config"]["steps"] = config.steps
             if existing != header:
                 raise ValueError(f"{self.dir} holds a different run")
-        else:
-            atomic_write(self.header_path, json.dumps(header, indent=2).encode())
+        atomic_write(self.header_path, json.dumps(header, indent=2).encode())
 
     def header(self) -> tuple[RunConfig, str]:
         data = json.loads(self.header_path.read_text())

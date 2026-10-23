@@ -21,6 +21,11 @@ workers can:
 This assumes the workers auditing a pair are mostly honest. Colluding workers who happen to
 audit each other can still pass a lie; centered ranks then bound what it can do to the
 update, whatever the lie is (`influence_bound`).
+
+aggregate="median" is the baseline from robust aggregation (as in CyBeR-0, Egger et al. 2025):
+every pair is scored by `replicas` different workers and the coordinate-wise median counts.
+Nobody is banned; a lie passes only when most of a pair's scorers tell it. It costs
+`replicas` times the work, against about 1.1x for spot checks.
 """
 
 from __future__ import annotations
@@ -41,16 +46,24 @@ class AuditPolicy:
     rtol: float = 1e-3
     atol: float = 1e-6
     max_opinions: int = 5
+    aggregate: str = "vote"  # "vote": spot checks and bans; "median": replicate every pair
+    replicas: int = 3
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.rate <= 1.0:
             raise ValueError("audit rate must be in [0, 1]")
         if self.probation < 0 or self.max_opinions < 3:
             raise ValueError("probation >= 0 and max_opinions >= 3 (a tie needs a third opinion)")
+        if self.aggregate not in ("vote", "median") or self.replicas < 1:
+            raise ValueError("aggregate is 'vote' or 'median', and replicas >= 1")
 
     @property
     def enabled(self) -> bool:
-        return self.rate > 0 or self.probation > 0
+        return self.rate > 0 or self.probation > 0 or self.median
+
+    @property
+    def median(self) -> bool:
+        return self.aggregate == "median"
 
     def close(self, a: float, b: float) -> bool:
         return abs(a - b) <= self.atol + self.rtol * max(abs(a), abs(b))

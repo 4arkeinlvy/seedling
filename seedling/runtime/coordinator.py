@@ -115,6 +115,8 @@ class Coordinator:
 
     def _needed(self, i: int) -> int:
         """Opinions pair i needs before it can settle: one, two if audited, one more per tie."""
+        if self.audit.median:
+            return self.audit.replicas
         n = len(self.opinions[i])
         if not self.audited[i]:
             return 1
@@ -141,6 +143,13 @@ class Coordinator:
         """Settle pair i if its opinions allow it; ban whoever a settled vote outvoted."""
         opinions = self.opinions[i]
         if not opinions:
+            return
+        if self.audit.median:
+            if len(opinions) >= self.audit.replicas:
+                self.results[i] = (
+                    float(np.median([o.f_plus for o in opinions])),
+                    float(np.median([o.f_minus for o in opinions])),
+                )
             return
         if self.audited[i] is None:
             chance = self.ledger.audit_chance(self.audit, opinions[0].worker) if self.audit.enabled else 0.0
