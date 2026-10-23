@@ -139,8 +139,10 @@ bench.bench_agreement` scores step 0's pairs under each condition:
 On CPU, scores are bit-identical whatever else is in the batch and however many threads run.
 bfloat16 against float32 moves the language model's scores by at most 1e-4 relative, ten
 times inside the tolerance. Text generation is different: where two logits nearly tie,
-batch shape or device can change a greedy token, and with it the answer and the score. M10
-handles that with evidence (TOPLOC-style checks of the generated tokens).
+another precision or device can pick another greedy token, and the text and its score follow
+(M10 measures 3.7% of tokens differing between bfloat16 and float32; on one CPU, batch shape
+changed none of 54 generations). M10 handles that with evidence (TOPLOC-style checks of the
+generated tokens).
 
 ## Not measured yet
 
